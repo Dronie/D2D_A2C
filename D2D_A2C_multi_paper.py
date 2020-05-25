@@ -1,3 +1,5 @@
+# more or less the same as D2D_A2C_multi - main difference being that this uses the network architecture from the paper
+
 import tensorflow as tf
 import numpy as np
 import tensorflow_probability as tfp
@@ -23,23 +25,20 @@ class ActorCriticNetwork:
       self.discount_ = tf.placeholder(tf.float32, [None, 1], name='discount')
       self.bootstrap_ = tf.placeholder(tf.float32, [None], name='bootstrap')
 
-      # set up actor network (approximates optimal policy)
-      self.fc1_actor_ = tf.contrib.layers.fully_connected(self.input_, actor_hidden_size, activation_fn=tf.nn.elu)
-      self.fc2_actor_ = tf.contrib.layers.fully_connected(self.fc1_actor_, actor_hidden_size, activation_fn=tf.nn.elu)
-      self.fc3_actor_ = tf.contrib.layers.fully_connected(self.fc2_actor_, action_size, activation_fn=None)
+      # set up actor network
+      self.fc1_actor_ = tf.contrib.layers.fully_connected(self.input_, actor_hidden_size, activation_fn=tf.nn.relu)
+      self.fc2_actor_ = tf.contrib.layers.fully_connected(self.fc1_actor_, action_size, activation_fn=tf.nn.softmax)
       # reshape the policy logits
-      self.policy_logits_ = tf.reshape(self.fc3_actor_, [-1, 1, action_size] )
+      self.policy_logits_ = tf.reshape(self.fc2_actor_, [-1, 1, action_size] )
   
       # generate action probabilities for taking actions
-      self.action_prob_ = tf.nn.softmax(self.fc3_actor_)
+      self.action_prob_ = tf.nn.softmax(self.fc2_actor_)
       
-      # set up critic network (approximates optimal value function (used as a baseline to reduce variance of loss gradient))
-      # - uses policy evaluation (e.g. Monte-Carlo / TD learning) to estimate the advantage
-      self.fc1_critic_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
-      self.fc2_critic_ = tf.contrib.layers.fully_connected(self.fc1_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
-      self.baseline_ = tf.contrib.layers.fully_connected(self.fc2_critic_, 1, activation_fn=None)
+      # set up critic network
+      self.fc1_critic_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.relu)
+      self.baseline_ = tf.contrib.layers.fully_connected(self.fc1_critic_, 1, activation_fn=None)
       
-      # Calculates the loss for an A2C update along a batch of trajectories. (TRFL)
+      # TRFL usage
       self.seq_aac_return_ = trfl.sequence_advantage_actor_critic_loss(self.policy_logits_, self.baseline_, self.action_,
                self.reward_, self.discount_, self.bootstrap_, lambda_=lambda_, entropy_cost=entropy_cost, 
                baseline_cost=baseline_cost, normalise_entropy=normalise_entropy)
@@ -55,23 +54,15 @@ class ActorCriticNetwork:
 train_episodes = 5000  
 discount = 0.99
 
-actor_hidden_size = 32 # number of units per layer in actor net
-critic_hidden_size = 32 # number of units per layer in critic net
-
-ac_learning_rate = 0.005
-
+actor_hidden_size = 200
+critic_hidden_size = 200
+ac_learning_rate = 0.001
 baseline_cost = 10. #scale derivatives between actor and critic networks
-#The `baseline_cost` parameter scales the
-#  gradients w.r.t the baseline relative to the policy gradient. i.e:
-#  `d(loss) / d(baseline) = baseline_cost * (n_step_return - baseline)`.
 
 # entropy hyperparameters
 entropy_cost = 0.001
 normalise_entropy = True
 
-# lambda_: an optional scalar or 2-D Tensor with shape `[T, B]` for
-#        Generalised Advantage Estimation as per
-#        https://arxiv.org/abs/1506.02438.
 lambda_ = 1.
 
 action_size = ch.n_actions
@@ -140,8 +131,6 @@ with tf.Session() as sess:
     total_loss_list, action_list, action_prob_list, bootstrap_list = [], [], [], []
     rewards_list = []
     collision_var = 0
-
-    # used for plots
     D2D_collision_probs = []
     collisions = []
     access_ratios = []
@@ -149,7 +138,7 @@ with tf.Session() as sess:
     avg_throughput = []
     time_avg_throughput = []
 
-    for ep in range(1, train_episodes): # not actually episodic, just a left over var name from the original code
+    for ep in range(1, train_episodes):
         #g_iB, g_j, G_ij, g_jB, G_j_j = ch.reset()
         
         #CU_SINR = ch.CU_SINR_no_collision(g_iB, power_levels, g_jB, RB_selections)
@@ -160,7 +149,7 @@ with tf.Session() as sess:
 
         ch.collision_indicator = 0
                      
-        # generate action probabilities from policy net and sample from the action probs (policy)
+        # generate action probabilities from policy net and sample from the action probs
         action_probs = []
         actions = []
         power_levels = []
@@ -193,13 +182,10 @@ with tf.Session() as sess:
 
         ep_length += 1
 
-        # bootstrapping: stopping to update many times in a trajectory
-        #  - done by estimating the value of the current state using the critic net
-
         if ep == train_episodes:
           bootstrap_value = np.zeros((1,),dtype=np.float32)
         else:
-          #get bootstrap values
+          #get bootstrap value
           bootstrap_values = []
           for i in range(0, ch.N_D2D):
             bootstrap_values.append(sess.run(D2D_target_nets[i].baseline_, feed_dict={
