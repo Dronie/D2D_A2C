@@ -3,15 +3,15 @@ import numpy as np
 import tensorflow_probability as tfp
 import trfl
 import matplotlib.pyplot as plt
-import D2D_env_discrete as D2D
+import n_player_game as game
 
 writer = tf.summary.FileWriter("/home/stefan/tmp/D2D/2")
 
-ch = D2D.Channel()
+env = game.Game(no_players=25, no_counters=30)
 
 # set up Actor and Critic networks
 class ActorCriticNetwork:
-    def __init__(self, name, obs_size=2, action_size=2, actor_hidden_size=32, critic_hidden_size=32, ac_learning_rate=0.001,  
+    def __init__(self, name, obs_size=2, action_size=1, actor_hidden_size=32, critic_hidden_size=32, ac_learning_rate=0.001,  
                  entropy_cost=0.01, normalise_entropy=True, lambda_=0., baseline_cost=1.):
     
         with tf.variable_scope(name):
@@ -52,7 +52,7 @@ class ActorCriticNetwork:
         return [t for t in tf.trainable_variables() if t.name.startswith(self.name)]
 
 # hyperparameters
-max_timesteps = 5000  
+max_timesteps = 1000  
 discount = 0.99
 
 actor_hidden_size = 32 # number of units per layer in actor net
@@ -74,48 +74,43 @@ normalise_entropy = True
 #        https://arxiv.org/abs/1506.02438.
 lambda_ = 0.
 
-action_size = ch.n_actions
-obs_size = ch.N_CU
+action_size = env.no_counters
+obs_size = env.no_counters
 
 print('action_size: ', action_size)
 print('obs_size: ', obs_size)
 
-D2D_nets = []
-D2D_target_nets = []
-D2D_target_net_update_ops = []
+player_nets = []
+player_target_nets = []
+player_target_net_update_ops = []
 
 tf.reset_default_graph()
 
-for i in range(0, ch.N_D2D):
-    D2D_nets.append(ActorCriticNetwork(name='ac_net_{:.0f}'.format(i), obs_size=obs_size, action_size=action_size, actor_hidden_size=actor_hidden_size,
+for i in range(0, env.no_players):
+    player_nets.append(ActorCriticNetwork(name='ac_net_{:.0f}'.format(i), obs_size=obs_size, action_size=action_size, actor_hidden_size=actor_hidden_size,
                                        ac_learning_rate=ac_learning_rate, entropy_cost=entropy_cost, normalise_entropy=normalise_entropy,
                                        lambda_=lambda_, baseline_cost=baseline_cost))
 
-    print('Instantiated Network {:.0f} of {:.0f}'.format(i+1, ch.N_D2D))
+    print('Instantiated Network {:.0f} of {:.0f}'.format(i+1, env.no_players))
 
-    D2D_target_nets.append(ActorCriticNetwork(name='ac_target_net_{:.0f}'.format(i), obs_size=obs_size, action_size=action_size, actor_hidden_size=actor_hidden_size,
+    player_target_nets.append(ActorCriticNetwork(name='ac_target_net_{:.0f}'.format(i), obs_size=obs_size, action_size=action_size, actor_hidden_size=actor_hidden_size,
                                        ac_learning_rate=ac_learning_rate, entropy_cost=entropy_cost, normalise_entropy=normalise_entropy,
                                        lambda_=lambda_, baseline_cost=baseline_cost))
 
-    print('Instantiated Target Network {:.0f} of {:.0f}'.format(i+1, ch.N_D2D))
+    print('Instantiated Target Network {:.0f} of {:.0f}'.format(i+1, env.no_players))
 
-    D2D_target_net_update_ops.append(trfl.update_target_variables(D2D_target_nets[i].get_network_variables(), 
-                                                                  D2D_nets[i].get_network_variables(), tau=0.001))
+    player_target_net_update_ops.append(trfl.update_target_variables(player_target_nets[i].get_network_variables(), 
+                                                                  player_nets[i].get_network_variables(), tau=0.001))
 
-    print('Instantiated Target Net Update ops {:.0f} of {:.0f}'.format(i+1, ch.N_D2D))
+    print('Instantiated Target Net Update ops {:.0f} of {:.0f}'.format(i+1, env.no_players))
     print('\n')
 
 
 stats_rewards_list = []
-stats_every = 10
 
-initial_actions = []
-power_levels = []
 RB_selections = []
-
-g_iB, g_j, G_ij, g_jB, G_j_j = ch.reset()
     
-state = np.zeros(ch.N_CU)
+state =  env.initialize()
 
 def running_mean(x, N):
     cumsum = np.cumsum(np.insert(x, 0, 0)) 
@@ -138,9 +133,11 @@ with tf.Session() as sess:
     avg_throughput = []
     time_avg_throughput = []
 
-    for t in range(1, max_timesteps):
+    total_rewards = []
 
-        ch.collision_indicator = 0
+    for t in range(1, max_timesteps):
+        env.reset()
+        #ch.collision_indicator = 0
                      
         # generate action probabilities from policy net and sample from the action probs (policy)
         action_probs = []
@@ -148,30 +145,32 @@ with tf.Session() as sess:
         power_levels = []
         RB_selections = []
 
-        for i in range(0, ch.N_D2D):
-            action_probs.append(sess.run(D2D_nets[i].action_prob_, feed_dict={D2D_nets[i].input_: np.expand_dims(state,axis=0)}))
-            action_probs[i] = action_probs[i][0]
-            actions.append(np.random.choice(np.arange(len(action_probs[i])), p=action_probs[i]))
-            power_levels.append(ch.action_space[actions[i]][0])
-            RB_selections.append(ch.action_space[actions[i]][1])
-
-        CU_SINR = ch.CU_SINR_no_collision(g_iB, power_levels, g_jB, RB_selections)
-            
-        next_state = ch.state(CU_SINR)
-        D2D_SINR = ch.D2D_SINR_no_collision(power_levels, g_j, G_ij, G_j_j, RB_selections, next_state)
-        reward, net = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_selections)
-            
-        reward = reward / 10**10
-        net = net / 10**10
-        if ch.collision_indicator > 0:
-            collision_var += 1
+        for i in range(0, env.no_players):
+            action_probs.append(sess.run(player_nets[i].action_prob_, feed_dict={player_nets[i].input_: np.expand_dims(state,axis=0)}))
+            action_probs[i] = action_probs[i][0] 
+            actions.append(np.random.choice(np.arange(len(action_probs[i])), p=action_probs[i])) # has a problem with this on the 2nd iteration ('float object cannot be interpreted as an integer')
         
-        collisions.append(ch.collision_indicator)
+        print(actions)
+
+        next_state = env.choose_counters(actions)
+
+        rewards = []
+
+        for i in range(0, env.no_players):
+            rewards.append(env.get_reward(next_state))
+            
+        total_reward = sum(rewards)
+        print('Total Reward: ', total_reward)
+        total_rewards.append(total_reward)
+
+        #if ch.collision_indicator > 0:
+        #    collision_var += 1
+        
+        #collisions.append(ch.collision_indicator)
         
         D2D_collision_probs.append(collision_var / t)
 
-        next_state = np.clip(next_state,-1.,1.)
-        total_reward += net
+        #next_state = np.clip(next_state,-1.,1.)
 
         t_length += 1
 
@@ -192,21 +191,31 @@ with tf.Session() as sess:
         else:
           #get bootstrap values
           bootstrap_values = []
-          for i in range(0, ch.N_D2D):
-            bootstrap_values.append(sess.run(D2D_target_nets[i].baseline_, feed_dict={
-                D2D_target_nets[i].input_: np.expand_dims(next_state, axis=0)}))
+          for i in range(0, env.no_players):
+            bootstrap_values.append(sess.run(player_target_nets[i].baseline_, feed_dict={
+                player_target_nets[i].input_: np.expand_dims(next_state, axis=0)}))
         
         # update network parameters
         total_losses = []
         seq_aac_returns = []
-        for i in range(0, ch.N_D2D):
-            print(np.reshape(actions[i], (-1, 1)))
-            _, total_loss, seq_aac_return = sess.run([D2D_nets[i].ac_optim_, D2D_nets[i].ac_loss_, D2D_nets[i].seq_aac_return_], feed_dict={
-                D2D_nets[i].input_: np.expand_dims(state, axis=0),
-                D2D_nets[i].action_: np.reshape(actions[i], (-1, 1)),
-                D2D_nets[i].reward_: np.reshape(reward[i], (-1, 1)),
-                D2D_nets[i].discount_: np.reshape(discount, (-1, 1)),
-                D2D_nets[i].bootstrap_: np.reshape(bootstrap_values[i], (1,))
+
+        for i in range(0, env.no_players):
+            sess.run(tf.print("actions", np.reshape(actions[i], (-1, 1)), summarize=-1))
+
+            sess.run(tf.print("policy_logits", player_nets[i].policy_logits_, summarize=-1), feed_dict={
+                player_nets[i].input_: np.expand_dims(state, axis=0),
+                player_nets[i].action_: np.reshape(actions[i], (-1, 1)),
+                player_nets[i].reward_: np.reshape(rewards[i], (-1, 1)),
+                player_nets[i].discount_: np.reshape(discount, (-1, 1)),
+                player_nets[i].bootstrap_: np.reshape(bootstrap_values[i], (1,)) #np.expand_dims(bootstrap_value, axis=0)
+            })
+
+            _, total_loss, seq_aac_return = sess.run([player_nets[i].ac_optim_, player_nets[i].ac_loss_, player_nets[i].seq_aac_return_], feed_dict={
+                player_nets[i].input_: np.expand_dims(state, axis=0),
+                player_nets[i].action_: np.reshape(actions[i], (-1, 1)),
+                player_nets[i].reward_: np.reshape(rewards[i], (-1, 1)),
+                player_nets[i].discount_: np.reshape(discount, (-1, 1)),
+                player_nets[i].bootstrap_: np.reshape(bootstrap_values[i], (1,))
             })
             total_losses.append(total_loss)
             seq_aac_returns.append(seq_aac_return)
@@ -215,101 +224,38 @@ with tf.Session() as sess:
 
         
         # update target network
-        for i in range(0, ch.N_D2D):
-            sess.run(D2D_target_net_update_ops[i])
+        for i in range(0, env.no_players):
+            sess.run(player_target_net_update_ops[i])
         
-        # debugging variables
-        stats_actor_loss += np.mean(seq_aac_return.extra.policy_gradient_loss)
-        stats_critic_loss += np.mean(seq_aac_return.extra.baseline_loss)
-        action_list.append(actions)
-        bootstrap_list.append(bootstrap_values)
-        action_prob_list.append(action_probs)
+        if t % 10 == 0:
+            print(env.counters)
 
-        a = list(ch.accessed_CUs)
-        if 2 in a:
-            a = a.index(2)
-            b = RB_selections.index(a)
-        else:
-            b = 0
-        
-        accessed = []
-        throughput = []    
-        for i in range(0, len(reward)):
-            if reward[i] > 0:
-                accessed.append(reward[i])
-                throughput.append(reward[i])
-            else:
-                throughput.append(0.0)
-        
-        access_ratios.append(len(accessed) / len(reward))
-        access_rates.append(sum(access_ratios) / t)
 
-        avg_throughput.append(sum(throughput))
-        time_avg_throughput.append(sum(avg_throughput)/ t)
-        
-        if t % stats_every == 0 or t == 1:
-            print('Power Levels: ', power_levels)
-            print('RB Selections: ', RB_selections)
-            print('Rewards: ', reward)
-            print('Accessed CUs: ', ch.accessed_CUs)
-            print('Reward of colliding agent: ', reward[b])
-            print('Number of Collisions: ', ch.collision_indicator)
-            print('||(T)imestep): {}|| '.format(t),
-                  'Last net (r)eward: {:.3f}| '.format(net),
-                  '(L)oss: {:4f}|'.format(np.mean(total_loss_list)))
-
-        stats_rewards_list.append((t, total_reward, t_length))
-        rewards_list.append(net)
         state = next_state
+
+        print(t)
 
         #writer.add_graph(sess.graph)
         #print("Graph added!")
+
+    
+    stats_rewards_list.append((t, total_reward, t_length))
     ts, rews, lens = np.array(stats_rewards_list).T
-    smoothed_rews = running_mean(rewards_list, 100)
-    smoothed_col_probs = running_mean(D2D_collision_probs, 100)
-    smoothed_access_rates = running_mean(access_rates, 100)
-    smoothed_throughput = running_mean(time_avg_throughput, 100)
+
+    ts = np.arange(999)
+    smoothed_rews = running_mean(total_rewards, 10)
 
     reward_fig = plt.figure()
 
     plt.plot(ts[-len(smoothed_rews):], smoothed_rews)
-    plt.plot(ts, rewards_list, color='grey', alpha=0.3)
+    plt.plot(ts, total_rewards, color='grey', alpha=0.3)
     plt.xlabel('Time-slot')
     plt.ylabel('Reward')
     plt.show()
 
-    collision_prob_fig = plt.figure()
-    plt.ylim(0, 1)
-    plt.xlim(0, 5000)
-    plt.plot(ts[-len(smoothed_col_probs):], smoothed_col_probs)
-    plt.plot(ts, D2D_collision_probs, color='grey', alpha=0.3)
-    plt.xlabel('Time-slot')
-    plt.ylabel('D2D collision probability')
-    plt.show()
 
-    true_collisions_fig = plt.figure()
-    plt.ylim(0, 1)
-    plt.xlim(0, 5000)
-    plt.plot(ts, collisions)
-    plt.ylabel('Number of collisions')
-    plt.xlabel('Time-slot')
-    plt.show()
 
-    access_rate_fig = plt.figure()
-    plt.ylim(0, 1)
-    plt.xlim(0, 5000)
-    plt.plot(ts[-len(smoothed_access_rates):], smoothed_access_rates)
-    plt.plot(ts, access_rates, color='grey', alpha=0.3)
-    plt.xlabel('Time-slot')
-    plt.ylabel('D2D access rate')
-    plt.show()
 
-    time_avg_overall_thrghpt_fig = plt.figure()
-    plt.plot(ts[-len(smoothed_throughput):], smoothed_throughput)
-    plt.plot(ts, time_avg_throughput, color='grey', alpha=0.3)
-    plt.xlabel('Time-slot')
-    plt.ylabel('Time-averaged network throughput')
-    plt.show()
 
 
 

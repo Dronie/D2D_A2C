@@ -30,12 +30,14 @@ class ActorCriticNetwork:
 
             self.fc2_actor_ = tf.contrib.layers.fully_connected(self.fc1_actor_, actor_hidden_size, activation_fn=tf.nn.elu)
 
-            self.fc3_actor_power_ = tf.contrib.layers.fully_connected(self.fc2_actor_, ch.D2D_tr_Power_levels, activation_fn=None)            
-            self.fc3_actor_RB_ = tf.contrib.layers.fully_connected(self.fc2_actor_, ch.N_CU, activation_fn=None)
+            self.fc3_actor_ = tf.contrib.layers.fully_connected(self.fc2_actor_, actor_hidden_size, activation_fn=tf.nn.elu)
+
+            self.fc4_actor_power_ = tf.contrib.layers.fully_connected(self.fc3_actor_, ch.D2D_tr_Power_levels, activation_fn=None)            
+            self.fc4_actor_RB_ = tf.contrib.layers.fully_connected(self.fc3_actor_, ch.N_CU, activation_fn=None)
 
             # reshape the policy logits
-            self.policy_logits_RB_ = tf.reshape(self.fc3_actor_RB_, (-1, 1, ch.N_CU))
-            self.policy_logits_power_ = tf.reshape(self.fc3_actor_power_, (-1, 1, ch.D2D_tr_Power_levels))
+            self.policy_logits_RB_ = tf.reshape(self.fc4_actor_RB_, (-1, 1, ch.N_CU))
+            self.policy_logits_power_ = tf.reshape(self.fc4_actor_power_, (-1, 1, ch.D2D_tr_Power_levels))
              
             # self.policy_logits_ = self.combine_tensors(self.fc3_actor_power_, self.fc3_actor_RB_) # TO-DO figure out how to have 2 seperate outputs for each action type
             # might need to do two seperate updates - policy logtis for both pow_sel and RB_sel
@@ -44,8 +46,8 @@ class ActorCriticNetwork:
             #self.policy_logits_ = tf.expand_dims(self.policy_logits_, axis=0)
             #self.policy_logits_ = tf.reshape(self.policy_logits_, [-1, 1, action_size]) # these resize it weirdly
             # generate action probabilities for taking actions
-            self.action_prob_power_ = tf.nn.softmax(self.fc3_actor_power_)
-            self.action_prob_RB_ = tf.nn.softmax(self.fc3_actor_RB_)
+            self.action_prob_power_ = tf.nn.softmax(self.fc4_actor_power_)
+            self.action_prob_RB_ = tf.nn.softmax(self.fc4_actor_RB_)
             
       
             # set up critic network
@@ -86,12 +88,12 @@ discount = 0.99
 
 actor_hidden_size = 32
 critic_hidden_size = 32
+    
+pow_learning_rate = 0.001
+RB_learning_rate = 0.001
 
-pow_learning_rate = 0.005
-RB_learning_rate = 0.005
-
-target_pow_learning_rate = 0.005
-target_RB_learning_rate = 0.005
+target_pow_learning_rate = 0.001
+target_RB_learning_rate = 0.001
 
 baseline_cost = 10 #scale derivatives between actor and critic networks
 

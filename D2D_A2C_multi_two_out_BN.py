@@ -12,8 +12,8 @@ ch = D2D.Channel()
 
 # set up Actor and Critic networks
 class ActorCriticNetwork:
-    def __init__(self, name, obs_size=2, action_size=2, actor_hidden_size=32, critic_hidden_size=32, pow_learning_rate=0.001,  
-                   RB_learning_rate=0.001, entropy_cost=0.01, normalise_entropy=True, lambda_=0., baseline_cost=1.):
+    def __init__(self, name, obs_size=2, action_size=2, actor_hidden_size=32, critic_hidden_size=32, ac_learning_rate=0.001,  
+                   entropy_cost=0.01, normalise_entropy=True, lambda_=0., baseline_cost=1.):
     
         with tf.variable_scope(name):
             # hyperparameter bootstrap_n determines the batch size
@@ -28,10 +28,16 @@ class ActorCriticNetwork:
             # set up actor network
             self.fc1_actor_ = tf.contrib.layers.fully_connected(self.input_, actor_hidden_size, activation_fn=tf.nn.elu)
 
-            self.fc2_actor_ = tf.contrib.layers.fully_connected(self.fc1_actor_, actor_hidden_size, activation_fn=tf.nn.elu)
+            self.mean1_actor_, self.variance1_actor_ = tf.nn.moments(self.fc1_actor_, axes=-1)
+            self.bn1_actor_ = tf.nn.batch_normalization(self.fc1_actor_, mean=self.mean1_actor_, variance=self.variance1_actor_, offset=0, scale=1, variance_epsilon=0.0001)
 
-            self.fc3_actor_power_ = tf.contrib.layers.fully_connected(self.fc2_actor_, ch.D2D_tr_Power_levels, activation_fn=None)            
-            self.fc3_actor_RB_ = tf.contrib.layers.fully_connected(self.fc2_actor_, ch.N_CU, activation_fn=None)
+            self.fc2_actor_ = tf.contrib.layers.fully_connected(self.bn1_actor_, actor_hidden_size, activation_fn=tf.nn.elu)
+
+            self.mean2_actor_, self.variance2_actor_ = tf.nn.moments(self.fc2_actor_, axes=-1)
+            self.bn2_actor_ = tf.nn.batch_normalization(self.fc2_actor_, mean=self.mean2_actor_, variance=self.variance2_actor_, offset=0, scale=1, variance_epsilon=0.0001)
+
+            self.fc3_actor_power_ = tf.contrib.layers.fully_connected(self.bn2_actor_, ch.D2D_tr_Power_levels, activation_fn=None)            
+            self.fc3_actor_RB_ = tf.contrib.layers.fully_connected(self.bn2_actor_, ch.N_CU, activation_fn=None)
 
             # reshape the policy logits
             self.policy_logits_RB_ = tf.reshape(self.fc3_actor_RB_, (-1, 1, ch.N_CU))
@@ -51,9 +57,15 @@ class ActorCriticNetwork:
             # set up critic network
             self.fc1_critic_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
 
-            self.fc2_critic_ = tf.contrib.layers.fully_connected(self.fc1_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
+            self.mean1_critic_, self.variance1_critic_ = tf.nn.moments(self.fc1_critic_, axes=-1)
+            self.bn1_critic_ = tf.nn.batch_normalization(self.fc1_critic_, mean=self.mean1_critic_, variance=self.variance1_critic_, offset=0, scale=1, variance_epsilon=0.0001)
 
-            self.baseline_ = tf.contrib.layers.fully_connected(self.fc2_critic_, 1, activation_fn=None)
+            self.fc2_critic_ = tf.contrib.layers.fully_connected(self.bn1_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
+
+            self.mean2_critic_, self.variance2_critic_ = tf.nn.moments(self.fc2_critic_, axes=-1)
+            self.bn2_critic_ = tf.nn.batch_normalization(self.fc2_critic_, mean=self.mean2_critic_, variance=self.variance2_critic_, offset=0, scale=1, variance_epsilon=0.0001)
+
+            self.baseline_ = tf.contrib.layers.fully_connected(self.bn2_critic_, 1, activation_fn=None)
       
             # Define Loss with TRFL
             self.seq_aac_return_pow_ = trfl.sequence_advantage_actor_critic_loss(self.policy_logits_power_, self.baseline_, self.action_pow_,
@@ -67,8 +79,8 @@ class ActorCriticNetwork:
             # Optimize the loss
             self.ac_loss_pow_ = tf.reduce_mean(self.seq_aac_return_pow_.loss)
             self.ac_loss_RB_ = tf.reduce_mean(self.seq_aac_return_RB_.loss)
-            self.ac_optim_pow_ = tf.train.AdamOptimizer(learning_rate=pow_learning_rate).minimize(self.ac_loss_pow_)
-            self.ac_optim_RB_ = tf.train.AdamOptimizer(learning_rate=RB_learning_rate).minimize(self.ac_loss_RB_)
+            self.ac_optim_pow_ = tf.train.AdamOptimizer(learning_rate=ac_learning_rate).minimize(self.ac_loss_pow_)
+            self.ac_optim_RB_ = tf.train.AdamOptimizer(learning_rate=ac_learning_rate).minimize(self.ac_loss_RB_)
             
 
     def get_network_variables(self):
@@ -86,13 +98,8 @@ discount = 0.99
 
 actor_hidden_size = 32
 critic_hidden_size = 32
-
-pow_learning_rate = 0.005
-RB_learning_rate = 0.005
-
-target_pow_learning_rate = 0.005
-target_RB_learning_rate = 0.005
-
+ac_learning_rate = 0.0005
+target_ac_learning_rate = 0.0005
 baseline_cost = 10 #scale derivatives between actor and critic networks
 
 # entropy hyperparameters
@@ -116,13 +123,13 @@ tf.reset_default_graph()
 
 for i in range(0, ch.N_D2D):
     D2D_nets.append(ActorCriticNetwork(name='ac_net_{:.0f}'.format(i), obs_size=obs_size, action_size=action_size, actor_hidden_size=actor_hidden_size,
-                                       pow_learning_rate=pow_learning_rate, RB_learning_rate=RB_learning_rate, entropy_cost=entropy_cost, normalise_entropy=normalise_entropy,
+                                       ac_learning_rate=ac_learning_rate, entropy_cost=entropy_cost, normalise_entropy=normalise_entropy,
                                        lambda_=lambda_, baseline_cost=baseline_cost))
 
     print('Instantiated Network {:.0f} of {:.0f}'.format(i+1, ch.N_D2D))
 
     D2D_target_nets.append(ActorCriticNetwork(name='ac_target_net_{:.0f}'.format(i), obs_size=obs_size, action_size=action_size, actor_hidden_size=actor_hidden_size,
-                                       pow_learning_rate=target_pow_learning_rate, RB_learning_rate=target_RB_learning_rate, entropy_cost=entropy_cost, normalise_entropy=normalise_entropy,
+                                       ac_learning_rate=target_ac_learning_rate, entropy_cost=entropy_cost, normalise_entropy=normalise_entropy,
                                        lambda_=lambda_, baseline_cost=baseline_cost))
 
     print('Instantiated Target Network {:.0f} of {:.0f}'.format(i+1, ch.N_D2D))
@@ -412,26 +419,20 @@ with tf.Session() as sess:
     plt.ylabel('Reward')
     plt.show()
 
+    true_collisions_fig = plt.figure()
+    plt.plot(eps, collisions)
+    plt.ylabel('Number of collisions')
+    plt.xlabel('Time-slot')
+    plt.show()
+
     collision_prob_fig = plt.figure()
-    plt.ylim(0, 1)
-    plt.xlim(0, 5000)
     plt.plot(eps[-len(smoothed_col_probs):], smoothed_col_probs)
     plt.plot(eps, D2D_collision_probs, color='grey', alpha=0.3)
     plt.xlabel('Time-slot')
     plt.ylabel('D2D collision probability')
     plt.show()
 
-    true_collisions_fig = plt.figure()
-    plt.ylim(0, 1)
-    plt.xlim(0, 5000)
-    plt.plot(eps, collisions)
-    plt.ylabel('Number of collisions')
-    plt.xlabel('Time-slot')
-    plt.show()
-
     access_rate_fig = plt.figure()
-    plt.ylim(0, 1)
-    plt.xlim(0, 5000)
     plt.plot(eps[-len(smoothed_access_rates):], smoothed_access_rates)
     plt.plot(eps, access_rates, color='grey', alpha=0.3)
     plt.xlabel('Time-slot')
