@@ -35,18 +35,34 @@ class ActorCriticNetwork:
       
             # set up critic network (approximates optimal state-value function (used as a baseline to reduce variance of loss gradient))
             # - uses policy evaluation (e.g. Monte-Carlo / TD learning) to estimate the advantage
-            self.fc1_critic_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
-            self.fc2_critic_ = tf.contrib.layers.fully_connected(self.fc1_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
-            self.baseline_ = tf.contrib.layers.fully_connected(self.fc2_critic_, 1, activation_fn=None)
+            #self.fc1_critic1_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
+            self.fc2_critic1_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
+            self.baseline1_ = tf.contrib.layers.fully_connected(self.fc2_critic1_, 1, activation_fn=None)
+
+            #self.fc1_critic2_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
+            self.fc2_critic2_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
+            self.baseline2_ = tf.contrib.layers.fully_connected(self.fc2_critic2_, 1, activation_fn=None)
+
+            self.critic_reshape_ = tf.reshape([self.baseline1_, self.baseline2_], [-1, 2])
+
+            #self.joint_baseline1_ = tf.contrib.layers.fully_connected(self.critic_reshape_, 32, activation_fn=tf.nn.elu)
+            self.joint_baseline_ = tf.contrib.layers.fully_connected(self.critic_reshape_, 1, activation_fn=None)
       
             # Calculates the loss for an A2C update along a batch of trajectories. (TRFL)
-            self.seq_aac_return_ = trfl.sequence_advantage_actor_critic_loss(self.policy_logits_, self.baseline_, self.action_,
+            self.seq_aac_return_critic_1 = trfl.sequence_advantage_actor_critic_loss(self.policy_logits_, self.baseline1_, self.action_,
+               self.reward_, self.discount_, self.bootstrap_, lambda_=lambda_, entropy_cost=entropy_cost, 
+               baseline_cost=baseline_cost, normalise_entropy=normalise_entropy)
+
+            self.seq_aac_return_critic_2 = trfl.sequence_advantage_actor_critic_loss(self.policy_logits_, self.baseline2_, self.action_,
                self.reward_, self.discount_, self.bootstrap_, lambda_=lambda_, entropy_cost=entropy_cost, 
                baseline_cost=baseline_cost, normalise_entropy=normalise_entropy)
       
             # Optimize the loss
-            self.ac_loss_ = tf.reduce_mean(self.seq_aac_return_.loss)
-            self.ac_optim_ = tf.train.AdamOptimizer(learning_rate=ac_learning_rate).minimize(self.ac_loss_)
+            self.ac_loss_1 = tf.reduce_mean(self.seq_aac_return_critic_1.loss)
+            self.ac_optim_1 = tf.train.AdamOptimizer(learning_rate=ac_learning_rate).minimize(self.ac_loss_1)
+
+            self.ac_loss_2 = tf.reduce_mean(self.seq_aac_return_critic_2.loss)
+            self.ac_optim_2 = tf.train.AdamOptimizer(learning_rate=ac_learning_rate).minimize(self.ac_loss_2)
       
     def get_network_variables(self):
         return [t for t in tf.trainable_variables() if t.name.startswith(self.name)]
@@ -72,7 +88,7 @@ normalise_entropy = True
 # lambda_: an optional scalar or 2-D Tensor with shape `[T, B]` for
 #        Generalised Advantage Estimation as per
 #        https://arxiv.org/abs/1506.02438.
-lambda_ = 0.
+lambda_ = 0. # closer to 0 = TD like method - closer to 1 = Monte-Carlo like method
 
 action_size = ch.n_actions
 obs_size = ch.N_CU
@@ -126,7 +142,7 @@ with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
     total_reward, t_length, done = 0, 0, 0
     stats_actor_loss, stats_critic_loss = 0., 0.
-    total_loss_list, action_list, action_prob_list, bootstrap_list = [], [], [], []
+    total_loss_list_selfish, total_loss_list_selfless, action_list, action_prob_list, bootstrap_list = [], [], [], [], []
     rewards_list = []
     collision_var = 0
 
@@ -159,10 +175,13 @@ with tf.Session() as sess:
             
         next_state = ch.state(CU_SINR)
         D2D_SINR = ch.D2D_SINR_no_collision(power_levels, g_j, G_ij, G_j_j, RB_selections, next_state)
-        reward, net = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_selections)
+        reward, net, D2D_rewards, CU_reward = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_selections)
             
         reward = reward / 10**10
         net = net / 10**10
+        D2D_rewards = D2D_rewards / 10**10
+        CU_reward = CU_reward / 10**10
+
         if ch.collision_indicator > 0:
             collision_var += 1
         
@@ -193,25 +212,47 @@ with tf.Session() as sess:
           #get bootstrap values
           bootstrap_values = []
           for i in range(0, ch.N_D2D):
-            bootstrap_values.append(sess.run(D2D_target_nets[i].baseline_, feed_dict={
+            bootstrap_values.append(sess.run(D2D_target_nets[i].joint_baseline_, feed_dict={
                 D2D_target_nets[i].input_: np.expand_dims(next_state, axis=0)}))
         
         # update network parameters
-        total_losses = []
-        seq_aac_returns = []
+        total_losses_selfish = []
+        seq_aac_returns_selfish = []
+
+        total_losses_selfless = []
+        seq_aac_returns_selfless = []
+
         for i in range(0, ch.N_D2D):
-            print(np.reshape(actions[i], (-1, 1)))
-            _, total_loss, seq_aac_return = sess.run([D2D_nets[i].ac_optim_, D2D_nets[i].ac_loss_, D2D_nets[i].seq_aac_return_], feed_dict={
+            #print(np.reshape(actions[i], (-1, 1)))
+
+            #sess.run(tf.print("baseline vals: ", D2D_nets[i].joint_baseline_), feed_dict={
+            #    D2D_nets[i].input_: np.expand_dims(state, axis=0)
+            #})
+
+            _, total_loss_selfish, seq_aac_return_selfish = sess.run([D2D_nets[i].ac_optim_1, D2D_nets[i].ac_loss_1, D2D_nets[i].seq_aac_return_critic_1], feed_dict={
                 D2D_nets[i].input_: np.expand_dims(state, axis=0),
                 D2D_nets[i].action_: np.reshape(actions[i], (-1, 1)),
-                D2D_nets[i].reward_: np.reshape(reward[i], (-1, 1)),
+                D2D_nets[i].reward_: np.reshape(D2D_rewards[i], (-1, 1)),
                 D2D_nets[i].discount_: np.reshape(discount, (-1, 1)),
                 D2D_nets[i].bootstrap_: np.reshape(bootstrap_values[i], (1,))
             })
-            total_losses.append(total_loss)
-            seq_aac_returns.append(seq_aac_return)
+            total_losses_selfish.append(total_loss_selfish)
+            seq_aac_returns_selfish.append(seq_aac_return_selfish)
 
-        total_loss_list.append(np.mean(total_losses))
+        for i in range(0, ch.N_D2D):
+            #print(np.reshape(actions[i], (-1, 1)))
+            _, total_loss_selfless, seq_aac_return_selfless = sess.run([D2D_nets[i].ac_optim_2, D2D_nets[i].ac_loss_2, D2D_nets[i].seq_aac_return_critic_2], feed_dict={
+                D2D_nets[i].input_: np.expand_dims(state, axis=0),
+                D2D_nets[i].action_: np.reshape(actions[i], (-1, 1)),
+                D2D_nets[i].reward_: np.reshape(CU_reward, (-1, 1)),
+                D2D_nets[i].discount_: np.reshape(discount, (-1, 1)),
+                D2D_nets[i].bootstrap_: np.reshape(bootstrap_values[i], (1,))
+            })
+            total_losses_selfless.append(total_loss_selfless)
+            seq_aac_returns_selfless.append(seq_aac_return_selfless)
+
+        total_loss_list_selfish.append(np.mean(total_losses_selfish))
+        total_loss_list_selfless.append(np.mean(total_losses_selfless))
 
         
         # update target network
@@ -219,8 +260,8 @@ with tf.Session() as sess:
             sess.run(D2D_target_net_update_ops[i])
         
         # debugging variables
-        stats_actor_loss += np.mean(seq_aac_return.extra.policy_gradient_loss)
-        stats_critic_loss += np.mean(seq_aac_return.extra.baseline_loss)
+        #stats_actor_loss += np.mean(seq_aac_return.extra.policy_gradient_loss)
+        #stats_critic_loss += np.mean(seq_aac_return.extra.baseline_loss)
         action_list.append(actions)
         bootstrap_list.append(bootstrap_values)
         action_prob_list.append(action_probs)
@@ -256,7 +297,8 @@ with tf.Session() as sess:
             print('Number of Collisions: ', ch.collision_indicator)
             print('||(T)imestep): {}|| '.format(t),
                   'Last net (r)eward: {:.3f}| '.format(net),
-                  '(L)oss: {:4f}|'.format(np.mean(total_loss_list)))
+                  'Selfless (L)oss: {:4f}|'.format(np.mean(total_loss_list_selfish)),
+                  'Selfish (L)oss: {:4f}|'.format(np.mean(total_loss_list_selfless)))
 
         stats_rewards_list.append((t, total_reward, t_length))
         rewards_list.append(net)
@@ -310,3 +352,6 @@ with tf.Session() as sess:
     plt.xlabel('Time-slot')
     plt.ylabel('Time-averaged network throughput')
     plt.show()
+
+
+

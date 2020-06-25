@@ -84,7 +84,7 @@ class ActorCriticNetwork:
 train_episodes = 5000  
 discount = 0.99
 
-actor_hidden_size = 32
+actor_hidden_size = 64
 critic_hidden_size = 32
 
 pow_learning_rate = 0.005
@@ -204,7 +204,7 @@ with tf.Session() as sess:
         CU_SINR = ch.CU_SINR_no_collision(g_iB, pow_sels, g_jB, RB_sels)
         next_state = ch.state(CU_SINR)
         D2D_SINR = ch.D2D_SINR_no_collision(pow_sels, g_j, G_ij, G_j_j, RB_sels, next_state)
-        reward, net = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels)
+        reward, net, _, _ = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels)
             
         reward = reward / 10**10
         net = net / 10**10
