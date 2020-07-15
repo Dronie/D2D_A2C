@@ -230,7 +230,7 @@ class Channel:
         CU_r = np.sum(self.W*np.log2(1 + SINR_CU))
         for j in range (self.N_D2D):
             for j_ in range(self.N_D2D):                  
-                if j != j_ and All_D2D_CU_index[j] == All_D2D_CU_index[j_]:  # if multiple D2Ds choose the same CU, r = -0.2*(10**10)
+                if j != j_ and All_D2D_CU_index[j] == All_D2D_CU_index[j_]:  # if multiple D2Ds choose the same CU, r = -0.2*(10**10) collision
                     self.collision_indicator += 1
                     D2D_r[j] = -0.2*(10**10)
 #                    CU_r = 0
@@ -239,7 +239,7 @@ class Channel:
                     break  
             else:
                 if SINR_CU[All_D2D_CU_index[j]] < dB_to_W(self.CU_min_SINR) or SINR_D2D[j] < dB_to_W(self.D2D_min_SINR):    # if the selection of the D2D j is ith CU which is under the threshold, r = -0.1*(10**10):   
-                    D2D_r[j] = -0.1*(10**10)
+                    D2D_r[j] = -0.2*(10**10)
 #                    CU_r = 0                    
                     r[j] = -0.2*(10**10)
                     #print('r under threshold')

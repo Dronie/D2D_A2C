@@ -72,10 +72,10 @@ class CriticNetwork:
 
             # set up critic network
             self.fc1_critic_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
-
             self.fc2_critic_ = tf.contrib.layers.fully_connected(self.fc1_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
+            self.fc3_critic_ = tf.contrib.layers.fully_connected(self.fc2_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
 
-            self.baseline_ = tf.contrib.layers.fully_connected(self.fc2_critic_, 1, activation_fn=None)
+            self.baseline_ = tf.contrib.layers.fully_connected(self.fc3_critic_, 1, activation_fn=None)
 
             self.Critic_return, self.advantage = trfl.sequence_advantage_critic_loss(self.baseline_,
                 self.reward_, self.discount_, self.bootstrap_, lambda_=lambda_, 
@@ -89,6 +89,28 @@ class CriticNetwork:
 
     def get_network_variables(self): # have to sort out this for centralised architecture
         return [t for t in tf.trainable_variables() if t.name.startswith(self.name)]
+    
+class Critic_connection:
+    def __init__(self, name, learning_rate=0.001):
+        with tf.variable_scope(name, 'connection'):
+            self.name=name
+            self.ind_inp = tf.placeholder(tf.float32, [None, 1], name='ind_inp')
+            self.soc_inp = tf.placeholder(tf.float32, [None, 1], name='soc_inp')
+            self.reward_ = tf.placeholder(tf.float32, [None, 1], name='reward')
+            self.discount_ = tf.placeholder(tf.float32, [None, 1], name='discount')
+            self.bootstrap_ = tf.placeholder(tf.float32, [None], name='bootstrap')
+
+            self.concat = tf.concat([self.ind_inp, self.soc_inp], 1)
+
+            self.con_layer = tf.contrib.layers.fully_connected(self.concat, 1, activation_fn=None)
+            
+            self.con_return, self.advantage = trfl.sequence_advantage_critic_loss(self.con_layer, self.reward_, self.discount_, self.bootstrap_, lambda_=lambda_, baseline_cost=1)
+
+            self.critic_loss = tf.reduce_mean(self.con_return.loss)
+            self.critic_optim = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(self.critic_loss)
+
+    def get_network_variables(self): # have to sort out this for centralised architecture
+        return [t for t in tf.trainable_variables() if t.name.startswith(self.name)]
 
 
 # hyperparameters
@@ -96,15 +118,20 @@ train_episodes = 5000
 discount = 0.99
 
 actor_hidden_size = 64
-critic_hidden_size = 32
+individual_critic_hidden_size = 32
+social_critic_hidden_size = 32
     
 pow_learning_rate = 0.001
 RB_learning_rate = 0.001
 
-critic_learning_rate = 0.0001
+individual_critic_learning_rate = 0.001
+social_critic_learning_rate = 0.001
+socialism_learning_rate = 0.01
 
 target_pow_learning_rate = 0.001
 target_RB_learning_rate = 0.001
+
+beta = 0.1 # socialism parameter (Lower - More Individualist | Higher - More Socialist)
 
 baseline_cost = 1 #scale derivatives between actor and critic networks
 
@@ -123,20 +150,44 @@ print('obs_size: ', obs_size)
 
 tf.reset_default_graph()
 
-# instantiate critic network
+# instantiate social critic networks
 
-central_critic = CriticNetwork(name="Critic_Net",critic_hidden_size=critic_hidden_size,
-                                         critic_learning_rate=critic_learning_rate)
+social_central_critic = CriticNetwork(name="social_Critic_Net",critic_hidden_size=social_critic_hidden_size,
+                                         critic_learning_rate=social_critic_learning_rate)
 
-target_critic_net = CriticNetwork(name="Target_Critic_Net",critic_hidden_size=critic_hidden_size,
-                                         critic_learning_rate=critic_learning_rate)
+social_target_critic_net = CriticNetwork(name="social_Target_Critic_Net",critic_hidden_size=social_critic_hidden_size,
+                                         critic_learning_rate=social_critic_learning_rate)
 
-target_critic_update_ops = trfl.update_target_variables(target_critic_net.get_network_variables(), 
-                                                                  central_critic.get_network_variables(), tau=0.001)
+social_target_critic_update_ops = trfl.update_target_variables(social_target_critic_net.get_network_variables(), 
+                                                                  social_central_critic.get_network_variables(), tau=0.001)
 
-print('Instantiated Critic Network')
+print('Instantiated Social Critic Network')
 
-# instantialte actor nets
+# instantiate individual critic
+
+individual_central_critic = CriticNetwork(name="individual_Critic_Net",critic_hidden_size=individual_critic_hidden_size,
+                                         critic_learning_rate=individual_critic_learning_rate)
+
+individual_target_critic_net = CriticNetwork(name="Target_Critic_Net",critic_hidden_size=individual_critic_hidden_size,
+                                         critic_learning_rate=individual_critic_learning_rate)
+
+individual_target_critic_update_ops = trfl.update_target_variables(individual_target_critic_net.get_network_variables(), 
+                                                                  individual_central_critic.get_network_variables(), tau=0.001)
+
+print('Instantiated Individual Critic Network')
+
+# instantiate connection weights
+
+connection_weights = Critic_connection(name='critic_connection', learning_rate=socialism_learning_rate)
+
+connection_weights_target = Critic_connection(name='critic_target_connection', learning_rate=socialism_learning_rate)
+
+connection_target_update_ops =  trfl.update_target_variables(connection_weights_target.get_network_variables(), 
+                                                                  connection_weights.get_network_variables(), tau=0.001)
+
+print('Instantiated connection weights')
+
+# instantiate actor nets
 
 D2D_actor_nets = []
 
@@ -181,7 +232,8 @@ with tf.Session() as sess:
     total_reward, ep_length, done = 0, 0, 0
     stats_actor_loss_pow, stats_critic_loss_pow = 0., 0.
     stats_actor_loss_RB, stats_critic_loss_RB = 0., 0.
-    total_loss_list_pow, total_loss_list_RB, action_list, action_prob_list, bootstrap_list = [], [], [], [], []
+    total_loss_list_pow, total_loss_list_RB, action_list, action_prob_list, social_bootstrap_list, individual_bootstrap_list  = [], [], [], [], [], []
+    total_loss_ind, total_loss_soc = [], []
     rewards_list = []
     collision_var = 0
     D2D_collision_probs = []
@@ -190,6 +242,8 @@ with tf.Session() as sess:
     access_rates = []
     avg_throughput = []
     time_avg_throughput = []
+    pow_sel_record = []
+    RB_sel_record = []
 
     for ep in range(1, train_episodes):
 
@@ -222,11 +276,16 @@ with tf.Session() as sess:
         next_state = ch.accessed_CUs
 
         D2D_SINR = ch.D2D_SINR_no_collision(pow_sels, g_j, G_ij, G_j_j, RB_sels, next_state_true)
-        reward, net, _, _ = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels)
+        reward, net, individualist_reward, socialist_reward = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels)
             
         reward = reward / 10**10
         net = net / 10**10
+        individualist_reward = [i / 10**10 for i in individualist_reward]
+        socialist_reward = socialist_reward / 10**10
         
+        #print('ind_rew: ', individualist_reward)
+        #print('soc_rew: ', socialist_reward)
+
         if ch.collision_indicator > 0:
             collision_var += 1
         
@@ -240,14 +299,25 @@ with tf.Session() as sess:
         ep_length += 1
 
         if ep == train_episodes:
-          bootstrap_value = np.zeros((1,),dtype=np.float32)
+          individual_bootstrap_value = np.zeros((1,),dtype=np.float32)
+          social_bootstrap_value = np.zeros((1,),dtype=np.float32)
         else:
           #get bootstrap value
-          bootstrap_values = []
+          individual_bootstrap_values = []
+          social_bootstrap_values = []
           for i in range(0, ch.N_D2D):
-            bootstrap_values.append(sess.run(target_critic_net.baseline_, feed_dict={
-                target_critic_net.input_: np.expand_dims(next_state, axis=0)}))
+            individual_bootstrap_values.append(sess.run(individual_target_critic_net.baseline_, feed_dict={
+                individual_target_critic_net.input_: np.expand_dims(next_state, axis=0)}))
+            social_bootstrap_values.append(sess.run(social_target_critic_net.baseline_, feed_dict={
+                social_target_critic_net.input_: np.expand_dims(next_state, axis=0)}))
+            connection_bootstrap_values, concat_values = sess.run([connection_weights_target.con_layer, connection_weights_target.concat], feed_dict={
+                connection_weights_target.soc_inp: social_bootstrap_values[i],
+                connection_weights_target.ind_inp: individual_bootstrap_values[i]
+            })
         
+        #print('concat: ', concat_values)
+        #print('con_boot: ', connection_bootstrap_values)
+
         #train networks
         
         total_losses_pow = []
@@ -256,29 +326,56 @@ with tf.Session() as sess:
         total_losses_RB = []
         seq_aac_returns_RB = []
         
-        # critic update
+        # critic updates
 
-        _, total_loss_critic = sess.run([central_critic.critic_optim,
-                                        central_critic.critic_loss_], feed_dict={
-            central_critic.input_: np.expand_dims(state, axis=0),
-            central_critic.reward_: np.reshape(stats.mean(reward), (-1, 1)), # taking the mean reward is the naive solution as
-                                                                             # it fails to address the credit assignment problem
-            central_critic.discount_: np.reshape(discount, (-1, 1)),
-            central_critic.bootstrap_: np.reshape(bootstrap_values[i], (1,)) 
+        _, total_loss_individual_critic = sess.run([individual_central_critic.critic_optim,
+                                        individual_central_critic.critic_loss_], feed_dict={
+            individual_central_critic.input_: np.expand_dims(state, axis=0),
+            individual_central_critic.reward_: np.reshape(stats.mean(individualist_reward), (-1, 1)), # taking the mean reward is the naive solution as
+                                                                                                     # it fails to address the credit assignment problem
+            individual_central_critic.discount_: np.reshape(discount, (-1, 1)),
+            individual_central_critic.bootstrap_: np.reshape(individual_bootstrap_values[i], (1,)) 
         })
          # need to change the advantage so as to address this problem - produce an advantage for each agent that
          # gives insight into that specific agent's individual contribution to the global reward (global reward being the cumulative SINR of CUs)
+        
+        _, total_loss_social_critic = sess.run([social_central_critic.critic_optim,
+                                        social_central_critic.critic_loss_], feed_dict={
+            social_central_critic.input_: np.expand_dims(state, axis=0),
+            social_central_critic.reward_: np.reshape(socialist_reward, (-1, 1)), # socialist reward is simply the sum of all CUs - could be improved upon w.r.t credit assignment
+            social_central_critic.discount_: np.reshape(discount, (-1, 1)),
+            social_central_critic.bootstrap_: np.reshape(social_bootstrap_values[i], (1,)) 
+        })
+
+        total_loss_ind.append(total_loss_individual_critic)
+        total_loss_soc.append(total_loss_social_critic)
         
 
         for i in range(0, ch.N_D2D):
             
             # get advantage for jth D2D
 
-            seq_c_return_, advantage = sess.run([central_critic.Critic_return, central_critic.advantage], feed_dict={
-                central_critic.input_: np.expand_dims(state, axis=0),
-                central_critic.reward_: np.reshape(reward[i], (-1, 1)),
-                central_critic.discount_: np.reshape(discount, (-1, 1)),
-                central_critic.bootstrap_: np.reshape(bootstrap_values[i], (1,)) #np.expand_dims(bootstrap_value, axis=0)
+            seq_i_c_return_, individualist_advantage = sess.run([individual_central_critic.Critic_return, individual_central_critic.advantage], feed_dict={
+                individual_central_critic.input_: np.expand_dims(state, axis=0),
+                individual_central_critic.reward_: np.reshape(individualist_reward[i], (-1, 1)),
+                individual_central_critic.discount_: np.reshape(discount, (-1, 1)),
+                individual_central_critic.bootstrap_: np.reshape(individual_bootstrap_values[i], (1,)) #np.expand_dims(bootstrap_value, axis=0)
+            })
+
+            seq_s_c_return_, socialist_advantage = sess.run([social_central_critic.Critic_return, social_central_critic.advantage], feed_dict={
+                social_central_critic.input_: np.expand_dims(state, axis=0),
+                social_central_critic.reward_: np.reshape(socialist_reward, (-1, 1)),
+                social_central_critic.discount_: np.reshape(discount, (-1, 1)),
+                social_central_critic.bootstrap_: np.reshape(social_bootstrap_values[i], (1,)) #np.expand_dims(bootstrap_value, axis=0)
+            })
+            #advantage = ((1 - beta) * individualist_advantage[0][0]) + (beta * socialist_advantage[0][0])
+
+            conn_return_, advantage = sess.run([connection_weights.con_return, connection_weights.advantage], feed_dict={
+                connection_weights.soc_inp: socialist_advantage,
+                connection_weights.ind_inp: individualist_advantage,
+                connection_weights.reward_: np.reshape(stats.mean(reward), (-1, 1)),
+                connection_weights.discount_: np.reshape(discount, (-1, 1)),
+                connection_weights.bootstrap_: np.reshape(connection_bootstrap_values, (1,)) #np.expand_dims(bootstrap_value, axis=0)
             })
             
             # power level selection distribution based updates
@@ -306,16 +403,27 @@ with tf.Session() as sess:
 
             total_losses_RB.append(total_loss_RB)
             seq_aac_returns_RB.append(seq_aac_return_RB)
+        
+        _, total_loss_connection_weights = sess.run([connection_weights.critic_optim,
+                                        connection_weights.critic_loss], feed_dict={
+            connection_weights.soc_inp: socialist_advantage,
+            connection_weights.ind_inp: individualist_advantage,
+            connection_weights.reward_: np.reshape(stats.mean(reward), (-1, 1)),
+            connection_weights.discount_: np.reshape(discount, (-1, 1)),
+            connection_weights.bootstrap_: np.reshape(connection_bootstrap_values, (1,))
+        })
 
         total_loss_list_pow.append(np.mean(total_losses_pow))
         total_loss_list_RB.append(np.mean(total_losses_RB))
         
         #update target network
         for i in range(0, ch.N_D2D):
-            sess.run(target_critic_update_ops)
+            sess.run(social_target_critic_update_ops)
+            sess.run(individual_target_critic_update_ops)
         
         #action_list.append(actions)
-        bootstrap_list.append(bootstrap_values)
+        social_bootstrap_list.append(social_bootstrap_values)
+        individual_bootstrap_list.append(individual_bootstrap_values)
         #action_prob_list.append(action_probs)
         
         #if total_reward < -250:
@@ -343,6 +451,9 @@ with tf.Session() as sess:
         avg_throughput.append(sum(throughput))
         time_avg_throughput.append(sum(avg_throughput)/ ep)
 
+        pow_sel_record.append(pow_sels)
+        RB_sel_record.append(RB_sels)
+
         if ep % stats_every == 0 or ep == 1:
             #for i in range(0, ch.N_D2D):
             #print('Last State: ', state)
@@ -356,8 +467,10 @@ with tf.Session() as sess:
                   'Last net (r)eward: {:.3f}| '.format(net),
                   #'Ep length: {:.1f}| '.format(np.mean(stats_rewards_list[-stats_every:],axis=0)[2]),
                   'Throughput: {:.3f}| '.format(sum(throughput)),
-                  'Pow (L)oss: {:4f}|'.format(np.mean(total_loss_list_pow)),
-                  'RB (L)oss: {:4f}|'.format(np.mean(total_loss_list_RB)))
+                  'Pow (L)oss: {:.4f}|'.format(np.mean(total_loss_list_pow)),
+                  'RB (L)oss: {:.4f}|'.format(np.mean(total_loss_list_RB)),
+                  'Ind (L)oss: {:.4f}|'.format(total_loss_individual_critic),
+                  'Soc (L)oss: {:.4f}|'.format(total_loss_social_critic))
                   #'Actor loss: {:.5f}'.format(stats_actor_loss),
                   #'Critic loss: {:.5f}'.format(stats_critic_loss))
             #print(np.mean(bootstrap_value), np.mean(action_list), np.mean(action_prob_list,axis=0))
@@ -397,7 +510,7 @@ with tf.Session() as sess:
     plt.show()
 
     true_collisions_fig = plt.figure()
-    plt.ylim(0, 1)
+    plt.ylim(0, ch.N_D2D)
     plt.xlim(0, 5000)
     plt.plot(eps, collisions)
     plt.ylabel('Number of collisions')
@@ -420,4 +533,27 @@ with tf.Session() as sess:
     plt.ylabel('Time-averaged network throughput')
     plt.show()
     
+    loss_plot = plt.figure()
+    plt.xlim(0, 5000)
+    plt.plot(eps[-len(total_loss_soc):], total_loss_soc, color='red')
+    plt.plot(eps[-len(total_loss_ind):], total_loss_ind, color='blue', alpha=0.5)
+    plt.xlabel('Time-slot')
+    plt.ylabel('Losses')
+    plt.show()
+
+    pow_sel_plot = plt.figure()
+    plt.xlim(0, 5000)
+    for i in range(0, ch.N_D2D):
+        plt.plot(eps[-len(pow_sel_record):], [item[i] for item in pow_sel_record])
+    plt.xlabel('Time-slot')
+    plt.ylabel('Power Level Selection')
+    plt.show()
+
+    RB_sel_plot = plt.figure()
+    plt.xlim(0, 5000)
+    for i in range(0, ch.N_D2D):
+        plt.plot(eps[-len(RB_sel_record):], [item[i] for item in RB_sel_record])
+    plt.xlabel('Time-slot')
+    plt.ylabel('RB Selection')
+    plt.show()
 

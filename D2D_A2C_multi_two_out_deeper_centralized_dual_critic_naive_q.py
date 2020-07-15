@@ -14,7 +14,7 @@ ch = D2D.Channel()
 # set up Actor and Critic networks
 
 class ActorNetwork:
-    def __init__(self, name, obs_size=2, actor_hidden_size=32, pow_learning_rate=0.001, RB_learning_rate=0.001, entropy_cost=0.1, normalise_entropy=True):
+    def __init__(self, name, obs_size=2, actor_hidden_size=32, pow_learning_rate=0.001, RB_learning_rate=0.001):
     
         with tf.variable_scope(name, "Actor"):
             
@@ -22,7 +22,7 @@ class ActorNetwork:
             self.input_ = tf.placeholder(tf.float32, [None, obs_size], name='inputs')
             self.action_RB_ = tf.placeholder(tf.int32, [None, 1], name='action_RB')
             self.action_pow_ = tf.placeholder(tf.int32, [None, 1], name='action_pow')
-            self.advantage_ = tf.placeholder(tf.float32, [None, 1], name='advantage')
+            self.action_values_ = tf.placeholder(tf.float32, [None, 1], name='action_values')
 
             # set up actor network
             self.fc1_actor_ = tf.contrib.layers.fully_connected(self.input_, actor_hidden_size, activation_fn=tf.nn.elu)
@@ -43,16 +43,14 @@ class ActorNetwork:
             self.action_prob_RB_ = tf.nn.softmax(self.fc4_actor_RB_)   
 
             # get loss through power selection distribution logits
-            self.Actor_return_pow = trfl.sequence_advantage_actor_loss(self.advantage_, self.policy_logits_power_, self.action_pow_,
-                entropy_cost=entropy_cost, normalise_entropy=normalise_entropy)
+            self.Actor_return_pow = trfl.discrete_policy_gradient(self.policy_logits_power_, self.action_pow_, self.action_values_)
             
             # get loss through RB selection distribution logits
-            self.Actor_return_RB = trfl.sequence_advantage_actor_loss(self.advantage_, self.policy_logits_RB_, self.action_RB_,
-                entropy_cost=entropy_cost, normalise_entropy=normalise_entropy)
+            self.Actor_return_RB = trfl.discrete_policy_gradient(self.policy_logits_RB_, self.action_RB_, self.action_values_)
 
             # Optimize the loss
-            self.ac_loss_pow_ = tf.reduce_mean(self.Actor_return_pow.loss)
-            self.ac_loss_RB_ = tf.reduce_mean(self.Actor_return_RB.loss)
+            self.ac_loss_pow_ = tf.reduce_mean(self.Actor_return_pow)
+            self.ac_loss_RB_ = tf.reduce_mean(self.Actor_return_RB)
             self.ac_optim_pow_ = tf.train.AdamOptimizer(learning_rate=pow_learning_rate).minimize(self.ac_loss_pow_)
             self.ac_optim_RB_ = tf.train.AdamOptimizer(learning_rate=RB_learning_rate).minimize(self.ac_loss_RB_)
 
@@ -61,33 +59,37 @@ class ActorNetwork:
 
 
 class CriticNetwork:
-    def __init__(self, name, critic_hidden_size=32, critic_learning_rate = 0.0001):
+    def __init__(self, name, obs_size=None, action_size=None, critic_hidden_size=32, critic_learning_rate = 0.0001):
         with tf.variable_scope(name, "Critic"):
             
             self.name=name
-            self.input_ = tf.placeholder(tf.float32, [None, obs_size], name='inputs')
+            self.state_ = tf.placeholder(tf.float32, [None, obs_size], name='state')
+            self.joint_action_min_a = tf.placeholder(tf.float32, [None, ch.N_D2D - 1], name='joint_actions_min_a')
+            self.current_actor = tf.placeholder(tf.float32, [None, 1], name='current_actor')
+            self.joint_action_tm1 = tf.placeholder(tf.float32, [None, ch.N_D2D], name='joint_action_tm1')
+
+            self.actions_ = tf.placeholder(tf.int32, [None, 1], name='c_actions')
             self.reward_ = tf.placeholder(tf.float32, [None, 1], name='reward')
             self.discount_ = tf.placeholder(tf.float32, [None, 1], name='discount')
-            self.bootstrap_ = tf.placeholder(tf.float32, [None], name='bootstrap')
+            self.bootstrap_ = tf.placeholder(tf.float32, [None, 1, action_size], name='bootstrap')
+
+            self.input_ = tf.concat([self.state_, self.joint_action_min_a, self.current_actor, self.joint_action_tm1], 1, name='input')
 
             # set up critic network
             self.fc1_critic_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
-
             self.fc2_critic_ = tf.contrib.layers.fully_connected(self.fc1_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
+            self.fc3_critic_ = tf.contrib.layers.fully_connected(self.fc2_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
 
-            self.baseline_ = tf.contrib.layers.fully_connected(self.fc2_critic_, 1, activation_fn=None)
+            self.action_values_ = tf.contrib.layers.fully_connected(self.fc3_critic_, action_size, activation_fn=None)
 
-            self.Critic_return, self.advantage = trfl.sequence_advantage_critic_loss(self.baseline_,
-                self.reward_, self.discount_, self.bootstrap_, lambda_=lambda_, 
-                baseline_cost=baseline_cost)
+            self.av_reshape_ = tf.reshape(self.action_values_, [-1, 1, action_size], name='av_reshape')
+
+            self.Critic_return = trfl.qlambda(self.av_reshape_, self.actions_, self.reward_, self.discount_, self.bootstrap_, lambda_=lambda_)
             
             self.critic_loss_ = tf.reduce_mean(self.Critic_return.loss)
             self.critic_optim = tf.train.AdamOptimizer(learning_rate=critic_learning_rate).minimize(self.critic_loss_)
-    
-    def get_advantage(self):
-        return self.advantage
 
-    def get_network_variables(self): # have to sort out this for centralised architecture
+    def get_network_variables(self):
         return [t for t in tf.trainable_variables() if t.name.startswith(self.name)]
 
 
@@ -96,15 +98,20 @@ train_episodes = 5000
 discount = 0.99
 
 actor_hidden_size = 64
-critic_hidden_size = 32
+individual_critic_hidden_size = 32
+social_critic_hidden_size = 32
     
 pow_learning_rate = 0.001
 RB_learning_rate = 0.001
 
-critic_learning_rate = 0.0001
+individual_critic_learning_rate = 0.001
+social_critic_learning_rate = 0.001
+socialism_learning_rate = 0.01
 
 target_pow_learning_rate = 0.001
 target_RB_learning_rate = 0.001
+
+beta = 0.1 # socialism parameter (Lower - More Individualist | Higher - More Socialist)
 
 baseline_cost = 1 #scale derivatives between actor and critic networks
 
@@ -115,35 +122,49 @@ normalise_entropy = True
 # one step returns ie TD(0).
 lambda_ = 1.
 
-action_size = ch.n_actions
+action_size_pow = ch.D2D_tr_Power_levels
+action_size_RB = ch.N_CU
 obs_size = ch.N_CU
 
-print('action_size: ', action_size)
+print('action_size_pow: ', action_size_pow)
+print('action_size_RB: ', action_size_RB)
 print('obs_size: ', obs_size)
 
 tf.reset_default_graph()
 
-# instantiate critic network
+# instantiate social critic networks
 
-central_critic = CriticNetwork(name="Critic_Net",critic_hidden_size=critic_hidden_size,
-                                         critic_learning_rate=critic_learning_rate)
+social_central_critic = CriticNetwork(name="social_Critic_Net", obs_size=obs_size, action_size=action_size_RB, critic_hidden_size=social_critic_hidden_size,
+                                         critic_learning_rate=social_critic_learning_rate)
 
-target_critic_net = CriticNetwork(name="Target_Critic_Net",critic_hidden_size=critic_hidden_size,
-                                         critic_learning_rate=critic_learning_rate)
+social_target_critic_net = CriticNetwork(name="social_Target_Critic_Net", obs_size=obs_size, action_size=action_size_RB, critic_hidden_size=social_critic_hidden_size,
+                                         critic_learning_rate=social_critic_learning_rate)
 
-target_critic_update_ops = trfl.update_target_variables(target_critic_net.get_network_variables(), 
-                                                                  central_critic.get_network_variables(), tau=0.001)
+social_target_critic_update_ops = trfl.update_target_variables(social_target_critic_net.get_network_variables(), 
+                                                                  social_central_critic.get_network_variables(), tau=0.001)
 
-print('Instantiated Critic Network')
+print('Instantiated Social Critic Network')
 
-# instantialte actor nets
+# instantiate individual critic
+
+individual_central_critic = CriticNetwork(name="individual_Critic_Net", obs_size=obs_size, action_size=action_size_pow, critic_hidden_size=individual_critic_hidden_size,
+                                         critic_learning_rate=individual_critic_learning_rate)
+
+individual_target_critic_net = CriticNetwork(name="Target_Critic_Net", obs_size=obs_size, action_size=action_size_pow, critic_hidden_size=individual_critic_hidden_size,
+                                         critic_learning_rate=individual_critic_learning_rate)
+
+individual_target_critic_update_ops = trfl.update_target_variables(individual_target_critic_net.get_network_variables(), 
+                                                                  individual_central_critic.get_network_variables(), tau=0.001)
+
+print('Instantiated Individual Critic Network')
+
+# instantiate actor nets
 
 D2D_actor_nets = []
 
 for i in range(0, ch.N_D2D):
     D2D_actor_nets.append(ActorNetwork(name='a_net_{:.0f}'.format(i), obs_size=obs_size, actor_hidden_size=actor_hidden_size,
-                                       pow_learning_rate=pow_learning_rate, RB_learning_rate=RB_learning_rate,
-                                       entropy_cost=entropy_cost, normalise_entropy=normalise_entropy))
+                                       pow_learning_rate=pow_learning_rate, RB_learning_rate=RB_learning_rate))
 
     print('Instantiated Actor Network {:.0f} of {:.0f}'.format(i+1, ch.N_D2D))
     print('\n')
@@ -181,7 +202,8 @@ with tf.Session() as sess:
     total_reward, ep_length, done = 0, 0, 0
     stats_actor_loss_pow, stats_critic_loss_pow = 0., 0.
     stats_actor_loss_RB, stats_critic_loss_RB = 0., 0.
-    total_loss_list_pow, total_loss_list_RB, action_list, action_prob_list, bootstrap_list = [], [], [], [], []
+    total_loss_list_pow, total_loss_list_RB, action_list, action_prob_list, social_bootstrap_list, individual_bootstrap_list  = [], [], [], [], [], []
+    total_loss_ind, total_loss_soc = [], []
     rewards_list = []
     collision_var = 0
     D2D_collision_probs = []
@@ -195,11 +217,13 @@ with tf.Session() as sess:
 
         ch.collision_indicator = 0
                      
-        # generate action probabilities from policy net and sample from the action probs
+        # generate action probabilities (from policy net forward pass) and use these to sample an action
         power_action_probs = []
         RB_action_probs = []
         pow_sels = []
         RB_sels = []
+        pow_sels_ind = []
+        RB_sels_ind = []
 
         for i in range(0, ch.N_D2D):
             power_action_probs.append(sess.run(D2D_actor_nets[i].action_prob_power_, feed_dict={D2D_actor_nets[i].input_: np.expand_dims(state,axis=0)}))
@@ -207,14 +231,14 @@ with tf.Session() as sess:
 
             RB_action_probs.append(sess.run(D2D_actor_nets[i].action_prob_RB_, feed_dict={D2D_actor_nets[i].input_: np.expand_dims(state,axis=0)}))
             RB_action_probs[i] = RB_action_probs[i][0]
-            
-            #print('Power_action_probs: ', power_action_probs)
-            #print('RB action probs: ', RB_action_probs)
-
 
             pow_sels.append(np.random.choice(ch.power_levels, p=power_action_probs[i]))
             RB_sels.append(np.random.choice(ch.CU_index, p=RB_action_probs[i]))
 
+            pow_sels_ind.append(list(ch.power_levels).index(pow_sels[i]))
+            RB_sels_ind.append(list(ch.CU_index).index(RB_sels[i]))
+
+        print(pow_sels_ind)
         #print("power_levels: ", ch.power_levels)
         CU_SINR = ch.CU_SINR_no_collision(g_iB, pow_sels, g_jB, RB_sels)
 
@@ -222,10 +246,12 @@ with tf.Session() as sess:
         next_state = ch.accessed_CUs
 
         D2D_SINR = ch.D2D_SINR_no_collision(pow_sels, g_j, G_ij, G_j_j, RB_sels, next_state_true)
-        reward, net, _, _ = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels)
+        reward, net, individualist_reward, socialist_reward = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels)
             
         reward = reward / 10**10
         net = net / 10**10
+        individualist_reward = [i / 10**10 for i in individualist_reward]
+        socialist_reward = socialist_reward / 10**10
         
         if ch.collision_indicator > 0:
             collision_var += 1
@@ -240,56 +266,77 @@ with tf.Session() as sess:
         ep_length += 1
 
         if ep == train_episodes:
-          bootstrap_value = np.zeros((1,),dtype=np.float32)
+          individual_bootstrap_value = np.zeros((1,),dtype=np.float32)
+          social_bootstrap_value = np.zeros((1,),dtype=np.float32)
         else:
           #get bootstrap value
-          bootstrap_values = []
-          for i in range(0, ch.N_D2D):
-            bootstrap_values.append(sess.run(target_critic_net.baseline_, feed_dict={
-                target_critic_net.input_: np.expand_dims(next_state, axis=0)}))
-        
-        #train networks
-        
-        total_losses_pow = []
-        seq_aac_returns_pow = []
+          individual_bootstrap_values = []
+          social_bootstrap_values = []
+          individual_target_values = sess.run(individual_target_critic_net.action_values_, feed_dict={
+              individual_target_critic_net.input_: np.expand_dims(next_state, axis=0)})
+          social_target_values = sess.run(social_target_critic_net.action_values_, feed_dict={
+              social_target_critic_net.input_: np.expand_dims(next_state, axis=0)})
 
+        print(individual_target_values)
+        print(social_target_values)
+
+        # critic forward passes
+
+        individualist_action_values = sess.run(individual_central_critic.action_values_, feed_dict={
+            individual_central_critic.input_: np.expand_dims(next_state, axis=0)
+        })
+        socialist_action_values = sess.run(social_central_critic.action_values_, feed_dict={
+            social_central_critic.input_: np.expand_dims(next_state, axis=0)
+        })
+
+        print(individualist_action_values)
+        print(socialist_action_values)
+
+        seq_aac_returns_pow = []
+        total_losses_pow = []
         total_losses_RB = []
         seq_aac_returns_RB = []
         
-        # critic update
-
-        _, total_loss_critic = sess.run([central_critic.critic_optim,
-                                        central_critic.critic_loss_], feed_dict={
-            central_critic.input_: np.expand_dims(state, axis=0),
-            central_critic.reward_: np.reshape(stats.mean(reward), (-1, 1)), # taking the mean reward is the naive solution as
-                                                                             # it fails to address the credit assignment problem
-            central_critic.discount_: np.reshape(discount, (-1, 1)),
-            central_critic.bootstrap_: np.reshape(bootstrap_values[i], (1,)) 
-        })
+        # critic updates
+        for i in range(0, len(pow_sels_ind)):
+            _, total_loss_individual_critic = sess.run([individual_central_critic.critic_optim,
+                                            individual_central_critic.critic_loss_], feed_dict={
+                individual_central_critic.input_: np.expand_dims(state, axis=0),
+                individual_central_critic.action_values_: np.reshape(individualist_action_values, (-1, action_size_pow)),
+                individual_central_critic.actions_: np.reshape(pow_sels_ind[i], (-1, 1)),
+                individual_central_critic.reward_: np.reshape(individualist_reward[i], (-1, 1)), # taking the mean reward is the naive solution as
+                                                                                                         # it fails to address the credit assignment problem
+                individual_central_critic.discount_: np.reshape(discount, (-1, 1)),
+                individual_central_critic.bootstrap_: np.reshape(individual_target_values, (-1, 1, action_size_pow))
+            })
          # need to change the advantage so as to address this problem - produce an advantage for each agent that
          # gives insight into that specific agent's individual contribution to the global reward (global reward being the cumulative SINR of CUs)
         
+        for i in range(0, len(RB_sels_ind)):
+            _, total_loss_social_critic = sess.run([social_central_critic.critic_optim,
+                                                    social_central_critic.critic_loss_], feed_dict={
+                social_central_critic.input_: np.expand_dims(state, axis=0),
+                social_central_critic.action_values_: np.reshape(socialist_action_values, (-1, action_size_RB)),
+                social_central_critic.actions_: np.reshape(RB_sels_ind[i], (-1, 1)),
+                social_central_critic.reward_: np.reshape(socialist_reward, (-1, 1)), # socialist reward is simply the sum of all CUs - could be improved upon w.r.t credit assignment
+                social_central_critic.discount_: np.reshape(discount, (-1, 1)),
+                social_central_critic.bootstrap_: np.reshape(social_target_values, (-1, 1, action_size_RB))
+        })
 
+        total_loss_ind.append(total_loss_individual_critic)
+        total_loss_soc.append(total_loss_social_critic)
+        
+        
         for i in range(0, ch.N_D2D):
-            
-            # get advantage for jth D2D
-
-            seq_c_return_, advantage = sess.run([central_critic.Critic_return, central_critic.advantage], feed_dict={
-                central_critic.input_: np.expand_dims(state, axis=0),
-                central_critic.reward_: np.reshape(reward[i], (-1, 1)),
-                central_critic.discount_: np.reshape(discount, (-1, 1)),
-                central_critic.bootstrap_: np.reshape(bootstrap_values[i], (1,)) #np.expand_dims(bootstrap_value, axis=0)
-            })
-            
             # power level selection distribution based updates
 
             _, total_loss_pow, seq_aac_return_pow = sess.run([D2D_actor_nets[i].ac_optim_pow_,
                                                               D2D_actor_nets[i].ac_loss_pow_, 
                                                               D2D_actor_nets[i].Actor_return_pow], feed_dict={
                 D2D_actor_nets[i].input_: np.expand_dims(state, axis=0),
-                D2D_actor_nets[i].action_pow_: np.reshape(np.where(ch.power_levels == pow_sels[i]), (-1, 1)),
-                D2D_actor_nets[i].action_RB_: np.reshape(RB_sels[i], (-1, 1)),
-                D2D_actor_nets[i].advantage_: np.reshape(advantage, (-1, 1)),
+                D2D_actor_nets[i].action_pow_: np.reshape(pow_sels_ind[i], (-1, 1)),
+                D2D_actor_nets[i].action_RB_: np.reshape(RB_sels_ind[i], (-1, 1)),
+                D2D_actor_nets[i].action_values_: np.reshape(individualist_action_values[0][pow_sels_ind[i]], (-1, 1)),
             })
 
             total_losses_pow.append(total_loss_pow)
@@ -299,9 +346,9 @@ with tf.Session() as sess:
                                                             D2D_actor_nets[i].ac_loss_RB_,
                                                             D2D_actor_nets[i].Actor_return_RB], feed_dict={
                 D2D_actor_nets[i].input_: np.expand_dims(state, axis=0),
-                D2D_actor_nets[i].action_pow_: np.reshape(np.where(ch.power_levels == pow_sels[i]), (-1, 1)),
-                D2D_actor_nets[i].action_RB_: np.reshape(RB_sels[i], (-1, 1)),
-                D2D_actor_nets[i].advantage_: np.reshape(advantage, (-1, 1)),
+                D2D_actor_nets[i].action_pow_: np.reshape(pow_sels_ind[i], (-1, 1)),
+                D2D_actor_nets[i].action_RB_: np.reshape(RB_sels_ind[i], (-1, 1)),
+                D2D_actor_nets[i].action_values_: np.reshape(socialist_action_values[0][RB_sels_ind[i]], (-1, 1)),
             })
 
             total_losses_RB.append(total_loss_RB)
@@ -312,10 +359,12 @@ with tf.Session() as sess:
         
         #update target network
         for i in range(0, ch.N_D2D):
-            sess.run(target_critic_update_ops)
+            sess.run(social_target_critic_update_ops)
+            sess.run(individual_target_critic_update_ops)
         
         #action_list.append(actions)
-        bootstrap_list.append(bootstrap_values)
+        social_bootstrap_list.append(social_bootstrap_values)
+        individual_bootstrap_list.append(individual_bootstrap_values)
         #action_prob_list.append(action_probs)
         
         #if total_reward < -250:
@@ -356,8 +405,10 @@ with tf.Session() as sess:
                   'Last net (r)eward: {:.3f}| '.format(net),
                   #'Ep length: {:.1f}| '.format(np.mean(stats_rewards_list[-stats_every:],axis=0)[2]),
                   'Throughput: {:.3f}| '.format(sum(throughput)),
-                  'Pow (L)oss: {:4f}|'.format(np.mean(total_loss_list_pow)),
-                  'RB (L)oss: {:4f}|'.format(np.mean(total_loss_list_RB)))
+                  'Pow (L)oss: {:.4f}|'.format(np.mean(total_loss_list_pow)),
+                  'RB (L)oss: {:.4f}|'.format(np.mean(total_loss_list_RB)),
+                  'Ind (L)oss: {:.4f}|'.format(total_loss_individual_critic),
+                  'Soc (L)oss: {:.4f}|'.format(total_loss_social_critic))
                   #'Actor loss: {:.5f}'.format(stats_actor_loss),
                   #'Critic loss: {:.5f}'.format(stats_critic_loss))
             #print(np.mean(bootstrap_value), np.mean(action_list), np.mean(action_prob_list,axis=0))
@@ -397,7 +448,7 @@ with tf.Session() as sess:
     plt.show()
 
     true_collisions_fig = plt.figure()
-    plt.ylim(0, 1)
+    plt.ylim(0, ch.N_D2D)
     plt.xlim(0, 5000)
     plt.plot(eps, collisions)
     plt.ylabel('Number of collisions')
@@ -420,4 +471,11 @@ with tf.Session() as sess:
     plt.ylabel('Time-averaged network throughput')
     plt.show()
     
+    loss_plot = plt.figure()
+    plt.xlim(0, 5000)
+    plt.plot(eps[-len(total_loss_soc):], total_loss_soc, color='red')
+    plt.plot(eps[-len(total_loss_ind):], total_loss_ind, color='blue', alpha=0.5)
+    plt.xlabel('Time-slot')
+    plt.ylabel('Losses')
+    plt.show()
 
