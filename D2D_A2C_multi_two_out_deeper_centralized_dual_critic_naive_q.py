@@ -177,7 +177,7 @@ initial_actions = []
 #power_levels = []
 #RB_selections = []
 
-g_iB, g_j, G_ij, g_jB, G_j_j = ch.reset()
+g_iB, g_j, G_ij, g_jB, G_j_j, d_ij = ch.reset()
 #for i in range(0, ch.N_D2D):
 #    action = np.random.randint(0, 299, 1)
 #    power_levels.append(ch.action_space[action][0][0])
@@ -187,6 +187,10 @@ g_iB, g_j, G_ij, g_jB, G_j_j = ch.reset()
 #print(RB_selections)
 
 state = np.zeros(ch.N_CU)
+joint_action_min_a = np.zeros(ch.N_D2D - 1)
+a = 0
+joint_pow_action_tm1 = np.zeros(ch.N_D2D)
+joint_rb_action_tm1 = np.zeros(ch.N_D2D)
 
 #CU_SINR = ch.CU_SINR_no_collision(g_iB, power_levels, g_jB, RB_selections)
 
@@ -212,6 +216,8 @@ with tf.Session() as sess:
     access_rates = []
     avg_throughput = []
     time_avg_throughput = []
+    pow_sel_record = []
+    RB_sel_record = []
 
     for ep in range(1, train_episodes):
 
@@ -224,6 +230,8 @@ with tf.Session() as sess:
         RB_sels = []
         pow_sels_ind = []
         RB_sels_ind = []
+        unused_actions = []
+        ua_probs = []
 
         for i in range(0, ch.N_D2D):
             power_action_probs.append(sess.run(D2D_actor_nets[i].action_prob_power_, feed_dict={D2D_actor_nets[i].input_: np.expand_dims(state,axis=0)}))
@@ -238,15 +246,15 @@ with tf.Session() as sess:
             pow_sels_ind.append(list(ch.power_levels).index(pow_sels[i]))
             RB_sels_ind.append(list(ch.CU_index).index(RB_sels[i]))
 
-        print(pow_sels_ind)
+        #print('pow_sels', pow_sels_ind)
         #print("power_levels: ", ch.power_levels)
         CU_SINR = ch.CU_SINR_no_collision(g_iB, pow_sels, g_jB, RB_sels)
 
-        next_state_true = ch.state(CU_SINR)
-        next_state = ch.accessed_CUs
+        next_state = ch.state(CU_SINR)
+        #next_state = ch.accessed_CUs
 
-        D2D_SINR = ch.D2D_SINR_no_collision(pow_sels, g_j, G_ij, G_j_j, RB_sels, next_state_true)
-        reward, net, individualist_reward, socialist_reward = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels)
+        D2D_SINR = ch.D2D_SINR_no_collision(pow_sels, g_j, G_ij, G_j_j, RB_sels, next_state)
+        reward, net, individualist_reward, socialist_reward = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels, d_ij)
             
         reward = reward / 10**10
         net = net / 10**10
@@ -266,31 +274,69 @@ with tf.Session() as sess:
         ep_length += 1
 
         if ep == train_episodes:
-          individual_bootstrap_value = np.zeros((1,),dtype=np.float32)
-          social_bootstrap_value = np.zeros((1,),dtype=np.float32)
+            individual_bootstrap_value = np.zeros((1,),dtype=np.float32)
+            social_bootstrap_value = np.zeros((1,),dtype=np.float32)
         else:
-          #get bootstrap value
-          individual_bootstrap_values = []
-          social_bootstrap_values = []
-          individual_target_values = sess.run(individual_target_critic_net.action_values_, feed_dict={
-              individual_target_critic_net.input_: np.expand_dims(next_state, axis=0)})
-          social_target_values = sess.run(social_target_critic_net.action_values_, feed_dict={
-              social_target_critic_net.input_: np.expand_dims(next_state, axis=0)})
+            #get bootstrap value
+          
+            individual_bootstrap_values = []
+            social_bootstrap_values = []
 
-        print(individual_target_values)
-        print(social_target_values)
+            individual_target_values = []
+            social_target_values = []
+
+            for i in range(0, ch.N_D2D):
+                pow_sels_copy = pow_sels.copy()
+                rb_sels_copy = RB_sels.copy()
+
+                pow_sels_copy.pop(i)
+                rb_sels_copy.pop(i)
+
+                individual_target_values.append( sess.run(individual_target_critic_net.action_values_, feed_dict={
+                individual_target_critic_net.state_: np.expand_dims(next_state, axis=0),
+                individual_target_critic_net.joint_action_min_a: np.reshape(pow_sels_copy, [-1, ch.N_D2D - 1]),
+                individual_target_critic_net.current_actor: np.reshape(i, [-1, 1]),
+                individual_target_critic_net.joint_action_tm1: np.reshape(joint_pow_action_tm1, [-1, ch.N_D2D])
+                }) )
+
+                social_target_values.append( sess.run(social_target_critic_net.action_values_, feed_dict={
+                social_target_critic_net.state_: np.expand_dims(next_state, axis=0),
+                social_target_critic_net.joint_action_min_a: np.reshape(rb_sels_copy, [-1, ch.N_D2D - 1]),
+                social_target_critic_net.current_actor: np.reshape(i, [-1, 1]),
+                social_target_critic_net.joint_action_tm1: np.reshape(joint_rb_action_tm1, [-1, ch.N_D2D])
+                }) )
+
+        #print(individual_target_values)
+        #print(social_target_values)
 
         # critic forward passes
 
-        individualist_action_values = sess.run(individual_central_critic.action_values_, feed_dict={
-            individual_central_critic.input_: np.expand_dims(next_state, axis=0)
-        })
-        socialist_action_values = sess.run(social_central_critic.action_values_, feed_dict={
-            social_central_critic.input_: np.expand_dims(next_state, axis=0)
-        })
+        individualist_action_values = []
+        socialist_action_values = []
+        for i in range(0, ch.N_D2D):
 
-        print(individualist_action_values)
-        print(socialist_action_values)
+            pow_sels_copy = pow_sels.copy()
+            rb_sels_copy = RB_sels.copy()
+
+            pow_sels_copy.pop(i)
+            rb_sels_copy.pop(i)
+
+            individualist_action_values.append( sess.run(individual_central_critic.action_values_, feed_dict={
+            individual_central_critic.state_: np.expand_dims(next_state, axis=0),
+            individual_central_critic.joint_action_min_a: np.reshape(pow_sels_copy, [-1, ch.N_D2D - 1]),
+            individual_central_critic.current_actor: np.reshape(i, [-1, 1]),
+            individual_central_critic.joint_action_tm1: np.reshape(joint_pow_action_tm1, [-1, ch.N_D2D])
+            }) )
+
+            socialist_action_values.append( sess.run(social_central_critic.action_values_, feed_dict={
+            social_central_critic.state_: np.expand_dims(next_state, axis=0),
+            social_central_critic.joint_action_min_a: np.reshape(rb_sels_copy, [-1, ch.N_D2D - 1]),
+            social_central_critic.current_actor: np.reshape(i, [-1, 1]),
+            social_central_critic.joint_action_tm1: np.reshape(joint_rb_action_tm1, [-1, ch.N_D2D])
+            }) )
+
+        #print(individualist_action_values)
+        #print(socialist_action_values)
 
         seq_aac_returns_pow = []
         total_losses_pow = []
@@ -298,11 +344,21 @@ with tf.Session() as sess:
         seq_aac_returns_RB = []
         
         # critic updates
-        for i in range(0, len(pow_sels_ind)):
+        for i in range(0, ch.N_D2D):
+            
+            pow_sels_copy = pow_sels.copy()
+            rb_sels_copy = RB_sels.copy()
+
+            pow_sels_copy.pop(i)
+            rb_sels_copy.pop(i)
+
             _, total_loss_individual_critic = sess.run([individual_central_critic.critic_optim,
                                             individual_central_critic.critic_loss_], feed_dict={
-                individual_central_critic.input_: np.expand_dims(state, axis=0),
-                individual_central_critic.action_values_: np.reshape(individualist_action_values, (-1, action_size_pow)),
+                individual_central_critic.state_: np.expand_dims(state, axis=0),
+                individual_central_critic.joint_action_min_a: np.reshape(pow_sels_copy, [-1, ch.N_D2D - 1]),
+                individual_central_critic.current_actor: np.reshape(i, [-1, 1]),
+                individual_central_critic.joint_action_tm1: np.reshape(joint_pow_action_tm1, [-1, ch.N_D2D]),
+                #individual_central_critic.action_values_: np.reshape(individualist_action_values[i], (-1, action_size_pow)),
                 individual_central_critic.actions_: np.reshape(pow_sels_ind[i], (-1, 1)),
                 individual_central_critic.reward_: np.reshape(individualist_reward[i], (-1, 1)), # taking the mean reward is the naive solution as
                                                                                                          # it fails to address the credit assignment problem
@@ -312,11 +368,13 @@ with tf.Session() as sess:
          # need to change the advantage so as to address this problem - produce an advantage for each agent that
          # gives insight into that specific agent's individual contribution to the global reward (global reward being the cumulative SINR of CUs)
         
-        for i in range(0, len(RB_sels_ind)):
             _, total_loss_social_critic = sess.run([social_central_critic.critic_optim,
                                                     social_central_critic.critic_loss_], feed_dict={
-                social_central_critic.input_: np.expand_dims(state, axis=0),
-                social_central_critic.action_values_: np.reshape(socialist_action_values, (-1, action_size_RB)),
+                social_central_critic.state_: np.expand_dims(state, axis=0),
+                social_central_critic.joint_action_min_a: np.reshape(rb_sels_copy, [-1, ch.N_D2D - 1]),
+                social_central_critic.current_actor: np.reshape(i, [-1, 1]),
+                social_central_critic.joint_action_tm1: np.reshape(joint_rb_action_tm1, [-1, ch.N_D2D]),
+                #social_central_critic.action_values_: np.reshape(socialist_action_values, (-1, action_size_RB)),
                 social_central_critic.actions_: np.reshape(RB_sels_ind[i], (-1, 1)),
                 social_central_critic.reward_: np.reshape(socialist_reward, (-1, 1)), # socialist reward is simply the sum of all CUs - could be improved upon w.r.t credit assignment
                 social_central_critic.discount_: np.reshape(discount, (-1, 1)),
@@ -329,6 +387,19 @@ with tf.Session() as sess:
         
         for i in range(0, ch.N_D2D):
             # power level selection distribution based updates
+            #print(individualist_action_values[i][0][pow_sels_ind[i]])
+            ind_base = 0
+            soc_base = 0
+
+            for j in range(0, len(ch.power_levels)):
+                ind_base += power_action_probs[i][j] * individualist_action_values[i][0][j] 
+            
+            for j in range(0, ch.N_CU):
+                soc_base += RB_action_probs[i][j] * socialist_action_values[i][0][j]
+
+            ind_adv = (2 * individualist_action_values[i][0][pow_sels_ind[i]]) - ind_base
+
+            soc_adv = (2 * socialist_action_values[i][0][RB_sels_ind[i]]) - soc_base
 
             _, total_loss_pow, seq_aac_return_pow = sess.run([D2D_actor_nets[i].ac_optim_pow_,
                                                               D2D_actor_nets[i].ac_loss_pow_, 
@@ -336,7 +407,7 @@ with tf.Session() as sess:
                 D2D_actor_nets[i].input_: np.expand_dims(state, axis=0),
                 D2D_actor_nets[i].action_pow_: np.reshape(pow_sels_ind[i], (-1, 1)),
                 D2D_actor_nets[i].action_RB_: np.reshape(RB_sels_ind[i], (-1, 1)),
-                D2D_actor_nets[i].action_values_: np.reshape(individualist_action_values[0][pow_sels_ind[i]], (-1, 1)),
+                D2D_actor_nets[i].action_values_: np.reshape(ind_adv, (-1, 1)),
             })
 
             total_losses_pow.append(total_loss_pow)
@@ -348,7 +419,7 @@ with tf.Session() as sess:
                 D2D_actor_nets[i].input_: np.expand_dims(state, axis=0),
                 D2D_actor_nets[i].action_pow_: np.reshape(pow_sels_ind[i], (-1, 1)),
                 D2D_actor_nets[i].action_RB_: np.reshape(RB_sels_ind[i], (-1, 1)),
-                D2D_actor_nets[i].action_values_: np.reshape(socialist_action_values[0][RB_sels_ind[i]], (-1, 1)),
+                D2D_actor_nets[i].action_values_: np.reshape(soc_adv, (-1, 1)),
             })
 
             total_losses_RB.append(total_loss_RB)
@@ -357,16 +428,18 @@ with tf.Session() as sess:
         total_loss_list_pow.append(np.mean(total_losses_pow))
         total_loss_list_RB.append(np.mean(total_losses_RB))
         
-        #update target network
-        for i in range(0, ch.N_D2D):
-            sess.run(social_target_critic_update_ops)
-            sess.run(individual_target_critic_update_ops)
+        #update target networks
+        sess.run(social_target_critic_update_ops)
+        sess.run(individual_target_critic_update_ops)
         
         #action_list.append(actions)
         social_bootstrap_list.append(social_bootstrap_values)
         individual_bootstrap_list.append(individual_bootstrap_values)
         #action_prob_list.append(action_probs)
         
+        joint_pow_action_tm1 = pow_sels # These might not be rightt (they are the action selections proper, not the action indexes)
+        joint_rb_action_tm1 = RB_sels
+
         #if total_reward < -250:
         #  done = 1
 
@@ -391,6 +464,9 @@ with tf.Session() as sess:
 
         avg_throughput.append(sum(throughput))
         time_avg_throughput.append(sum(avg_throughput)/ ep)
+
+        pow_sel_record.append(pow_sels)
+        RB_sel_record.append(RB_sels)
 
         if ep % stats_every == 0 or ep == 1:
             #for i in range(0, ch.N_D2D):
@@ -440,7 +516,7 @@ with tf.Session() as sess:
 
     collision_prob_fig = plt.figure()
     plt.ylim(0, 1)
-    plt.xlim(0, 5000)
+    plt.xlim(0, train_episodes)
     plt.plot(eps[-len(smoothed_col_probs):], smoothed_col_probs)
     plt.plot(eps, D2D_collision_probs, color='grey', alpha=0.3)
     plt.xlabel('Time-slot')
@@ -449,7 +525,7 @@ with tf.Session() as sess:
 
     true_collisions_fig = plt.figure()
     plt.ylim(0, ch.N_D2D)
-    plt.xlim(0, 5000)
+    plt.xlim(0, train_episodes)
     plt.plot(eps, collisions)
     plt.ylabel('Number of collisions')
     plt.xlabel('Time-slot')
@@ -457,7 +533,7 @@ with tf.Session() as sess:
 
     access_rate_fig = plt.figure()
     plt.ylim(0, 1)
-    plt.xlim(0, 5000)
+    plt.xlim(0, train_episodes)
     plt.plot(eps[-len(smoothed_access_rates):], smoothed_access_rates)
     plt.plot(eps, access_rates, color='grey', alpha=0.3)
     plt.xlabel('Time-slot')
@@ -472,10 +548,26 @@ with tf.Session() as sess:
     plt.show()
     
     loss_plot = plt.figure()
-    plt.xlim(0, 5000)
+    plt.xlim(0, train_episodes)
     plt.plot(eps[-len(total_loss_soc):], total_loss_soc, color='red')
     plt.plot(eps[-len(total_loss_ind):], total_loss_ind, color='blue', alpha=0.5)
     plt.xlabel('Time-slot')
     plt.ylabel('Losses')
+    plt.show()
+
+    pow_sel_plot = plt.figure()
+    plt.xlim(0, train_episodes)
+    for i in range(0, ch.N_D2D):
+        plt.plot(eps[-len(pow_sel_record):], [item[i] for item in pow_sel_record])
+    plt.xlabel('Time-slot')
+    plt.ylabel('Power Level Selection')
+    plt.show()
+
+    RB_sel_plot = plt.figure()
+    plt.xlim(0, train_episodes)
+    for i in range(0, ch.N_D2D):
+        plt.plot(eps[-len(RB_sel_record):], [item[i] for item in RB_sel_record])
+    plt.xlabel('Time-slot')
+    plt.ylabel('RB Selection')
     plt.show()
 

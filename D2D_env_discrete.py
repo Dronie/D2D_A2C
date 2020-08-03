@@ -152,7 +152,7 @@ class Channel:
                 else: 
                     g_J_j[j_] = self.PL_k*d_J_j[j_]**-self.PLfactor*g_jj_ffading[j_]*g_jj_sfading[j_]                  
             G_j_j[:, j] = g_J_j         # matrix                              
-        return g_iB,g_j,G_ij,g_jB,G_j_j
+        return g_iB,g_j,G_ij,g_jB,G_j_j,d_ij
     
 
     def CU_SINR_no_collision(self, g_iB, All_D2D_Power, g_jB, All_D2D_CU_index):
@@ -223,8 +223,8 @@ class Channel:
     
         
     # one D2D user can only choose one CU, i.e., if D2D users choose the same CU, reward or SINR = 0.  
-    def D2D_reward_no_collision(self, SINR_D2D, SINR_CU, All_D2D_CU_index): 
-        
+    def D2D_reward_no_collision(self, SINR_D2D, SINR_CU, All_D2D_CU_index, d_ij): 
+        #print('all_D2D: ', All_D2D_CU_index)
         r = np.zeros(self.N_D2D)
         D2D_r = np.zeros(self.N_D2D)
         CU_r = np.sum(self.W*np.log2(1 + SINR_CU))
@@ -246,7 +246,7 @@ class Channel:
                 else:
                     D2D_r[j] = self.W*np.log2(1 + SINR_D2D[j])     
 #                    CU_r = np.sum(self.W*np.log2(1 + SINR_CU))
-                    r[j] = D2D_r[j] + CU_r
+                    r[j] = D2D_r[j] + CU_r - (d_ij[j][All_D2D_CU_index[j]] * (10**6))
 
                     #print('r work')
         #print('r', r)

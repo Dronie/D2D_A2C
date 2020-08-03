@@ -156,7 +156,7 @@ initial_actions = []
 #power_levels = []
 #RB_selections = []
 
-g_iB, g_j, G_ij, g_jB, G_j_j = ch.reset()
+g_iB, g_j, G_ij, g_jB, G_j_j, d_ij = ch.reset()
 #for i in range(0, ch.N_D2D):
 #    action = np.random.randint(0, 299, 1)
 #    power_levels.append(ch.action_space[action][0][0])
@@ -201,6 +201,12 @@ with tf.Session() as sess:
         pow_sels = []
         RB_sels = []
 
+        unused_action_probs_pow = []
+        unused_action_probs_rb = []
+
+        unused_actions_pow = []
+        unused_actions_rb = []
+
         for i in range(0, ch.N_D2D):
             power_action_probs.append(sess.run(D2D_actor_nets[i].action_prob_power_, feed_dict={D2D_actor_nets[i].input_: np.expand_dims(state,axis=0)}))
             power_action_probs[i] = power_action_probs[i][0]
@@ -208,21 +214,135 @@ with tf.Session() as sess:
             RB_action_probs.append(sess.run(D2D_actor_nets[i].action_prob_RB_, feed_dict={D2D_actor_nets[i].input_: np.expand_dims(state,axis=0)}))
             RB_action_probs[i] = RB_action_probs[i][0]
             
-            #print('Power_action_probs: ', power_action_probs)
-            #print('RB action probs: ', RB_action_probs)
-
+            pow_copy = list(ch.power_levels).copy()
+            rb_copy = list(ch.CU_index).copy()
 
             pow_sels.append(np.random.choice(ch.power_levels, p=power_action_probs[i]))
             RB_sels.append(np.random.choice(ch.CU_index, p=RB_action_probs[i]))
 
+            power_action_probs[i] = list(power_action_probs[i])
+            RB_action_probs[i] = list(RB_action_probs[i])
+
+            unused_action_probs_pow.append(power_action_probs[i].copy())
+            unused_action_probs_rb.append(RB_action_probs[i].copy())
+
+            # remove action choices from unused action prob lists
+            unused_action_probs_pow[i].pop(pow_copy.index(pow_sels[i]))
+            unused_action_probs_rb[i].pop(rb_copy.index(RB_sels[i]))
+
+            # remove action choices from unused action proper lists
+            pow_copy.remove(pow_sels[i])
+            rb_copy.remove(RB_sels[i])
+
+            unused_actions_pow.append(pow_copy)
+            unused_actions_rb.append(rb_copy)
+
         #print("power_levels: ", ch.power_levels)
         CU_SINR = ch.CU_SINR_no_collision(g_iB, pow_sels, g_jB, RB_sels)
+
+        # Q VALUE CALCULATIONS (unused actions) -------------------------------------------------------------------------------------
+
+        # get s' and r' for all possible other actions, for each agent
+        pow_alternate_states = []
+        pow_alt_rewards = []
+
+        rb_alternate_states = []
+        rb_alt_rewards = []
+
+        for i in range(0, ch.N_D2D):
+            pow_alternate_states.append([])
+            rb_alternate_states.append([])
+
+            pow_alt_rewards.append([])
+            rb_alt_rewards.append([])
+
+            temp_pow = pow_sels.copy() # a = [1,2,3]
+            temp_rb = RB_sels.copy()   # b = [1,2,3]
+
+            temp_pow.pop(i)            # a = [2,3]
+            temp_rb.pop(i)             # b = [2,3]
+            for j in range(0, len(unused_actions_pow[i])):   #      i
+                temp_pow.insert(i, unused_actions_pow[i][j]) # a = [j,2,3]
+                pow_alternate_states[i].append(ch.state(ch.CU_SINR_no_collision(g_iB, temp_pow, g_jB, RB_sels)))
+                D2D_SINR = ch.D2D_SINR_no_collision(temp_pow, g_j, G_ij, G_j_j, RB_sels, pow_alternate_states[i])
+                pow_alt_rewards[i].append(ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels, d_ij))
+                temp_pow.pop(i)
+            temp_pow.insert(i, pow_sels[i])
+
+            for j in range(0, len(unused_actions_rb[i])):
+                temp_rb.insert(i, unused_actions_rb[i][j])
+                rb_alternate_states[i].append(ch.state(ch.CU_SINR_no_collision(g_iB, pow_sels, g_jB, temp_rb)))
+                D2D_SINR = ch.D2D_SINR_no_collision(pow_sels, g_j, G_ij, G_j_j, temp_rb, rb_alternate_states[i])
+                rb_alt_rewards[i].append(ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels, d_ij))
+                temp_rb.pop(i)
+            temp_rb.insert(i, RB_sels[i])
+
+            # CHECK THAT THESE WORK
+
+        # feed states through critic to get V(s') CHANGE TO WORK
+
+        alternate_values_pow = []
+        alternate_values_rb = []
+
+        for i in range(0, ch.N_D2D):
+            alternate_values_pow.append([])
+            alternate_values_rb.append([])
+
+            for j in range(0, len(pow_alternate_states[i])):
+                alternate_values_pow[i].append(sess.run(central_critic.baseline_, feed_dict={
+                    central_critic.input_: np.reshape(pow_alternate_states[i][j], [-1, ch.N_CU])
+                }))
+        
+            for j in range(0, len(rb_alternate_states[i])):
+                alternate_values_rb[i].append(sess.run(central_critic.baseline_, feed_dict={
+                    central_critic.input_: np.reshape(rb_alternate_states[i][j], [-1, ch.N_CU])
+                }))
+
+        # compute q values for all alternate actions
+
+        alternate_qs_pow = []
+        alternate_qs_rb = []
+
+        for i in range(0, ch.N_D2D):
+            alternate_qs_pow.append([])
+            for j in range(0, len(alternate_values_pow[i])):
+                alternate_qs_pow[i].append((pow_alt_rewards[i][j][1] / 10**10) + (discount * alternate_values_pow[i][j][0][0]))
+        
+        for i in range(0, ch.N_D2D):
+            alternate_qs_rb.append([])
+            for j in range(0, len(alternate_values_rb[i])):
+                alternate_qs_rb[i].append((rb_alt_rewards[i][j][1] / 10**10) + (discount * alternate_values_rb[i][j][0][0]))
+        
+        # multiply alternate q values by respective action probs given by policy output distributution
+
+        alternate_weighted_qs_pow = []
+        alternate_weighted_qs_rb = []
+
+        for i in range(0, ch.N_D2D):
+            alternate_weighted_qs_pow.append([])
+            alternate_weighted_qs_rb.append([])
+            for j in range(0, len(alternate_qs_pow[i])):
+                alternate_weighted_qs_pow[i].append(unused_action_probs_pow[i][j] * alternate_qs_pow[i][j])
+
+            for j in range(0, len(alternate_qs_rb[i])):
+                alternate_weighted_qs_rb[i].append(unused_action_probs_rb[i][j] * alternate_qs_rb[i][j])
+        
+        # sum calculations for each agent
+
+        alt_pow_sums = []
+        alt_rb_sums = []
+
+        for i in range(0, ch.N_D2D):
+            alt_pow_sums.append(sum(alternate_weighted_qs_pow[i]))
+            alt_rb_sums.append(sum(alternate_weighted_qs_rb[i]))
+
+        #-----------------------------------------------------------------------------------------------------------
 
         next_state_true = ch.state(CU_SINR)
         next_state = ch.accessed_CUs
 
         D2D_SINR = ch.D2D_SINR_no_collision(pow_sels, g_j, G_ij, G_j_j, RB_sels, next_state_true)
-        reward, net, _, _ = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels)
+        reward, net, ind_rew, soc_rew = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels, d_ij)
             
         reward = reward / 10**10
         net = net / 10**10
@@ -258,6 +378,13 @@ with tf.Session() as sess:
         
         # critic update
 
+        ind_q = []
+        soc_q = []
+
+        for i in range(0, ch.N_D2D):
+            ind_q.append(net + (discount * bootstrap_values[i]))
+            soc_q.append(net + (discount * bootstrap_values[i]))
+
         _, total_loss_critic = sess.run([central_critic.critic_optim,
                                         central_critic.critic_loss_], feed_dict={
             central_critic.input_: np.expand_dims(state, axis=0),
@@ -289,7 +416,7 @@ with tf.Session() as sess:
                 D2D_actor_nets[i].input_: np.expand_dims(state, axis=0),
                 D2D_actor_nets[i].action_pow_: np.reshape(np.where(ch.power_levels == pow_sels[i]), (-1, 1)),
                 D2D_actor_nets[i].action_RB_: np.reshape(RB_sels[i], (-1, 1)),
-                D2D_actor_nets[i].advantage_: np.reshape(advantage, (-1, 1)),
+                D2D_actor_nets[i].advantage_: np.reshape((ind_q[i] - alt_pow_sums[i]), (-1, 1)),
             })
 
             total_losses_pow.append(total_loss_pow)
@@ -301,7 +428,7 @@ with tf.Session() as sess:
                 D2D_actor_nets[i].input_: np.expand_dims(state, axis=0),
                 D2D_actor_nets[i].action_pow_: np.reshape(np.where(ch.power_levels == pow_sels[i]), (-1, 1)),
                 D2D_actor_nets[i].action_RB_: np.reshape(RB_sels[i], (-1, 1)),
-                D2D_actor_nets[i].advantage_: np.reshape(advantage, (-1, 1)),
+                D2D_actor_nets[i].advantage_: np.reshape((soc_q[i] - alt_rb_sums[i]), (-1, 1)),
             })
 
             total_losses_RB.append(total_loss_RB)
