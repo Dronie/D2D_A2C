@@ -6,6 +6,7 @@ import tensorflow_probability as tfp
 import trfl
 import matplotlib.pyplot as plt
 import D2D_env_discrete as D2D
+import csv
 
 writer = tf.summary.FileWriter("/home/stefan/tmp/D2D/2")
 
@@ -26,8 +27,9 @@ class ActorCriticNetwork:
       self.bootstrap_ = tf.placeholder(tf.float32, [None], name='bootstrap')
 
       # set up actor network
-      self.fc1_actor_ = tf.contrib.layers.fully_connected(self.input_, actor_hidden_size, activation_fn=tf.nn.relu)
-      self.fc2_actor_ = tf.contrib.layers.fully_connected(self.fc1_actor_, action_size, activation_fn=tf.nn.softmax)
+      self.fc1_actor_ = tf.contrib.layers.fully_connected(self.input_, actor_hidden_size, activation_fn=tf.nn.elu)
+      self.fc2_actor_ = tf.contrib.layers.fully_connected(self.fc1_actor_, actor_hidden_size, activation_fn=tf.nn.elu)
+      self.fc3_actor_ = tf.contrib.layers.fully_connected(self.fc2_actor_, action_size, activation_fn=None)
       # reshape the policy logits
       self.policy_logits_ = tf.reshape(self.fc2_actor_, [-1, 1, action_size] )
   
@@ -35,7 +37,9 @@ class ActorCriticNetwork:
       self.action_prob_ = tf.nn.softmax(self.fc2_actor_)
       
       # set up critic network
-      self.fc1_critic_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.relu)
+      self.fc1_critic_ = tf.contrib.layers.fully_connected(self.input_, critic_hidden_size, activation_fn=tf.nn.elu)
+      self.fc2_critic_ = tf.contrib.layers.fully_connected(self.fc1_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
+      self.fc3_critic_ = tf.contrib.layers.fully_connected(self.fc3_critic_, critic_hidden_size, activation_fn=tf.nn.elu)
       self.baseline_ = tf.contrib.layers.fully_connected(self.fc1_critic_, 1, activation_fn=None)
       
       # TRFL usage
@@ -54,9 +58,10 @@ class ActorCriticNetwork:
 train_episodes = 5000  
 discount = 0.99
 
-actor_hidden_size = 200
-critic_hidden_size = 200
-ac_learning_rate = 0.001
+actor_hidden_size = 32
+critic_hidden_size = 32
+ac_learning_rate = 0.01
+
 baseline_cost = 10. #scale derivatives between actor and critic networks
 
 # entropy hyperparameters
@@ -104,7 +109,7 @@ initial_actions = []
 power_levels = []
 RB_selections = []
 
-g_iB, g_j, G_ij, g_jB, G_j_j = ch.reset()
+g_iB, g_j, G_ij, g_jB, G_j_j, d_ij = ch.reset()
 #for i in range(0, ch.N_D2D):
 #    action = np.random.randint(0, 299, 1)
 #    power_levels.append(ch.action_space[action][0][0])
@@ -166,7 +171,7 @@ with tf.Session() as sess:
             
         next_state = ch.state(CU_SINR)
         D2D_SINR = ch.D2D_SINR_no_collision(power_levels, g_j, G_ij, G_j_j, RB_selections, next_state)
-        reward, net = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_selections)
+        reward, net, _, _ = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_selections, d_ij)
             
         reward = reward / 10**10
         net = net / 10**10
@@ -275,6 +280,13 @@ with tf.Session() as sess:
     smoothed_col_probs = running_mean(D2D_collision_probs, 100)
     smoothed_access_rates = running_mean(access_rates, 100)
     smoothed_throughput = running_mean(time_avg_throughput, 100)
+
+    with open('individualac.csv', 'w', newline='') as myfile:
+        wr = csv.writer(myfile, quoting=csv.QUOTE_ALL)
+        wr.writerow(smoothed_rews)
+        wr.writerow(smoothed_col_probs)
+        wr.writerow(smoothed_access_rates)
+        wr.writerow(smoothed_throughput)
 
     reward_fig = plt.figure()
 

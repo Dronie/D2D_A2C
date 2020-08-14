@@ -5,6 +5,7 @@ import tensorflow_probability as tfp
 import trfl
 import matplotlib.pyplot as plt
 import D2D_env_discrete as D2D
+import json
 
 writer = tf.summary.FileWriter("/home/stefan/tmp/D2D/2")
 
@@ -143,7 +144,7 @@ initial_actions = []
 #power_levels = []
 #RB_selections = []
 
-g_iB, g_j, G_ij, g_jB, G_j_j = ch.reset()
+g_iB, g_j, G_ij, g_jB, G_j_j, d_ij = ch.reset()
 #for i in range(0, ch.N_D2D):
 #    action = np.random.randint(0, 299, 1)
 #    power_levels.append(ch.action_space[action][0][0])
@@ -206,7 +207,7 @@ with tf.Session() as sess:
         CU_SINR = ch.CU_SINR_no_collision(g_iB, pow_sels, g_jB, RB_sels)
         next_state = ch.state(CU_SINR)
         D2D_SINR = ch.D2D_SINR_no_collision(pow_sels, g_j, G_ij, G_j_j, RB_sels, next_state)
-        reward, net, _, _ = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels)
+        reward, net, _, _ = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_sels, d_ij)
             
         reward = reward / 10**10
         net = net / 10**10
@@ -405,6 +406,18 @@ with tf.Session() as sess:
 #        time_avg_throughput[i] = time_avg_throughput[i] / train_episodes
 
     smoothed_throughput = running_mean(time_avg_throughput, 100)
+
+    sr = open('indTwoOutRew.json', 'w+')
+    json.dump(list(smoothed_rews), sr)
+
+    sc = open('indTwoOutCol.json', 'w+')
+    json.dump(list(smoothed_col_probs), sc)
+
+    sa = open('indTwoOutAcc.json', 'w+')
+    json.dump(list(smoothed_access_rates), sa)
+    
+    st = open('indTwoOutThr.json', 'w+')
+    json.dump(list(smoothed_throughput), st)
 
     reward_fig = plt.figure()
 

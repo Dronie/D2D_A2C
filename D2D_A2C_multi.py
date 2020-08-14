@@ -4,6 +4,7 @@ import tensorflow_probability as tfp
 import trfl
 import matplotlib.pyplot as plt
 import D2D_env_discrete as D2D
+import json
 
 writer = tf.summary.FileWriter("/home/stefan/tmp/D2D/2")
 
@@ -113,7 +114,7 @@ initial_actions = []
 power_levels = []
 RB_selections = []
 
-g_iB, g_j, G_ij, g_jB, G_j_j = ch.reset()
+g_iB, g_j, G_ij, g_jB, G_j_j, d_ij = ch.reset()
     
 state = np.zeros(ch.N_CU)
 
@@ -159,7 +160,7 @@ with tf.Session() as sess:
             
         next_state = ch.state(CU_SINR)
         D2D_SINR = ch.D2D_SINR_no_collision(power_levels, g_j, G_ij, G_j_j, RB_selections, next_state)
-        reward, net = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_selections)
+        reward, net, _, _ = ch.D2D_reward_no_collision(D2D_SINR, CU_SINR, RB_selections, d_ij)
             
         reward = reward / 10**10
         net = net / 10**10
@@ -200,7 +201,7 @@ with tf.Session() as sess:
         total_losses = []
         seq_aac_returns = []
         for i in range(0, ch.N_D2D):
-            print(np.reshape(actions[i], (-1, 1)))
+            #print(np.reshape(actions[i], (-1, 1)))
             _, total_loss, seq_aac_return = sess.run([D2D_nets[i].ac_optim_, D2D_nets[i].ac_loss_, D2D_nets[i].seq_aac_return_], feed_dict={
                 D2D_nets[i].input_: np.expand_dims(state, axis=0),
                 D2D_nets[i].action_: np.reshape(actions[i], (-1, 1)),
@@ -269,6 +270,19 @@ with tf.Session() as sess:
     smoothed_col_probs = running_mean(D2D_collision_probs, 100)
     smoothed_access_rates = running_mean(access_rates, 100)
     smoothed_throughput = running_mean(time_avg_throughput, 100)
+
+    sr = open('individualacRew.json', 'w+')
+    json.dump(list(smoothed_rews), sr)
+
+    sc = open('individualacCol.json', 'w+')
+    json.dump(list(smoothed_col_probs), sc)
+
+    sa = open('individualacAcc.json', 'w+')
+    json.dump(list(smoothed_access_rates), sa)
+    
+    st = open('individualacThr.json', 'w+')
+    json.dump(list(smoothed_throughput), st)
+
 
     reward_fig = plt.figure()
 

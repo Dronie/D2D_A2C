@@ -97,14 +97,13 @@ discount = 0.99
 
 critic_replay_buffer = []
 actor_replay_buffer = []
-replay_prob = 0.1
+replay_prob = 0.15
 replay_time_step = False
 
-actor_hidden_size = 64
-critic_hidden_size = 64
+actor_hidden_size = 128
+critic_hidden_size = 128
 
 actor_learning_rate = 0.001
-
 critic_learning_rate = 0.001
 
 target_pow_learning_rate = 0.001
@@ -539,6 +538,6 @@ with tf.Session() as sess:
     for i in range(0, ch.N_D2D):
         plt.plot(eps[-len(pow_sel_record):], [item[i] for item in pow_sel_record])
     plt.xlabel('Time-slot')
-    plt.ylabel('Power Level Selection')
+    plt.ylabel('Action Selection')
     plt.show()
 
