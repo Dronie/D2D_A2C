@@ -1,4 +1,5 @@
 import numpy as np
+import json
 
 def dBm_to_W(a):
     b=0.001*np.power(10,(a/10))
@@ -21,14 +22,28 @@ def GeneratecellUEPosition(SimulationRegion,N_CU):
     global CU_Position_y
     CU_Position_x=np.random.uniform((-SimulationRegion/2),(SimulationRegion/2),N_CU)
     CU_Position_y=np.random.uniform((-SimulationRegion/2),(SimulationRegion/2),N_CU)
-    #print(CU_Position_x,CU_Position_y)
+
+    cuposx = open('cuposx.json', 'r')
+    cuposy = open('cuposy.json', 'r')
+
+    CU_Position_x = json.load(cuposx)
+    CU_Position_y = json.load(cuposy)
+
+    print(CU_Position_x,CU_Position_y)
 
 def GenerateD2DPosition(SimulationRegion,N_D2D):
     global D2D_Position_x
     global D2D_Position_y    
     D2D_Position_x=np.random.uniform((-SimulationRegion/2),(SimulationRegion/2),N_D2D)
     D2D_Position_y=np.random.uniform((-SimulationRegion/2),(SimulationRegion/2),N_D2D)
-    #print(D2D_Position_x,D2D_Position_y)
+
+    d2dposx = open('d2dposx.json', 'r')
+    d2dposy = open('d2dposy.json', 'r')
+
+    D2D_Position_x = json.load(d2dposx)
+    D2D_Position_y = json.load(d2dposy)
+
+    print(D2D_Position_x,D2D_Position_y)
     
 def Distance(x,y):
     distpow=np.power(x,2)+np.power(y,2)
@@ -246,7 +261,7 @@ class Channel:
                 else:
                     D2D_r[j] = self.W*np.log2(1 + SINR_D2D[j])     
 #                    CU_r = np.sum(self.W*np.log2(1 + SINR_CU))
-                    r[j] = D2D_r[j] + CU_r - (d_ij[j][All_D2D_CU_index[j]] * (10**6))
+                    r[j] = D2D_r[j] + CU_r #- (d_ij[j][All_D2D_CU_index[j]] * (10**6))
 
                     #print('r work')
         #print('r', r)
