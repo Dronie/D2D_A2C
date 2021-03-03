@@ -23,12 +23,6 @@ def GeneratecellUEPosition(SimulationRegion,N_CU):
     CU_Position_x=np.random.uniform((-SimulationRegion/2),(SimulationRegion/2),N_CU)
     CU_Position_y=np.random.uniform((-SimulationRegion/2),(SimulationRegion/2),N_CU)
 
-    cuposx = open('cuposx.json', 'r')
-    cuposy = open('cuposy.json', 'r')
-
-    CU_Position_x = json.load(cuposx)
-    CU_Position_y = json.load(cuposy)
-
     print(CU_Position_x,CU_Position_y)
 
 def GenerateD2DPosition(SimulationRegion,N_D2D):
@@ -36,12 +30,6 @@ def GenerateD2DPosition(SimulationRegion,N_D2D):
     global D2D_Position_y    
     D2D_Position_x=np.random.uniform((-SimulationRegion/2),(SimulationRegion/2),N_D2D)
     D2D_Position_y=np.random.uniform((-SimulationRegion/2),(SimulationRegion/2),N_D2D)
-
-    d2dposx = open('d2dposx.json', 'r')
-    d2dposy = open('d2dposy.json', 'r')
-
-    D2D_Position_x = json.load(d2dposx)
-    D2D_Position_y = json.load(d2dposy)
 
     print(D2D_Position_x,D2D_Position_y)
     
