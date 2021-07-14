@@ -1,8 +1,8 @@
 # D2D A2C Code Repo
 
-Read/download the finished thesis [here](https://github.com/Dronie/D2D_A2C/blob/master/thesis.pdf)
+<strong>Read/download the finished thesis [here](https://github.com/Dronie/D2D_A2C/blob/master/thesis.pdf)</strong>
 
-Channel Selection and Power Control for D2D Communication via Online Reinforcement Learning implementations
+## Channel Selection and Power Control for D2D Communication via Online Reinforcement Learning implementations
 
 Individiual actor critic implementation - [IAC.py](https://github.com/Dronie/D2D_A2C/blob/master/IAC.py)
 
