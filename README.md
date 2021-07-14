@@ -1,12 +1,14 @@
 # D2D A2C Code Repo
+
+Read/download the finished thesis [here](https://github.com/Dronie/D2D_A2C/blob/master/thesis.pdf)
+
 Channel Selection and Power Control for D2D Communication via Online Reinforcement Learning implementations
 
-<strong>D2D_A2C_multi.py</strong> - benchmark code
+Individiual actor critic implementation - [IAC.py](https://github.com/Dronie/D2D_A2C/blob/master/IAC.py)
+Multi-headed individiual actor critic implementation - [MHIAC.py](https://github.com/Dronie/D2D_A2C/blob/master/MHIAC.py)
+Centralized COMA implementation - [coma_centralized.py](https://github.com/Dronie/D2D_A2C/blob/master/coma_centralized.py)
+Partially Centralized COMA implementation - [coma_partially_centralized.py](https://github.com/Dronie/D2D_A2C/blob/master/coma_partially_centralized.py)
+Dual-Critic Implementation - [dual_critic.py](https://github.com/Dronie/D2D_A2C/blob/master/dual_critic.py)
+Partially Centralized Dual-Critic Implementation - [dual_critic_partially_centralized.py](https://github.com/Dronie/D2D_A2C/blob/master/dual_critic_partially_centralized.py)
 
-<strong>D2D_A2C_multi_two_out.py</strong> - working code for dual policy distribution output model
-
-<strong>D2D_A2C_multi_two_out_BN.py</strong> - same as "D2D_A2C_multi_two_out.py" bit using batch normalisation
-
-<strong>D2D_A2C_multi_two_out_deeper.py</strong>- same as "D2D_A2C_multi_two_out.py" but with altered network architecture (best convergence performance)
-
-<strong>D2D_env_discrete.py</strong> - environment simulation code (provdided by supervisor)
+NOTE: Some [TRFL](https://github.com/deepmind/trfl) files were edited for this work. These files will need to be replaced with the edited files (of the same name) which are available here [base_ops.py](https://github.com/Dronie/D2D_A2C/blob/master/base_ops.py), [discrete_policy_gradient_ops.py](https://github.com/Dronie/D2D_A2C/blob/master/discrete_policy_gradient_ops.py)
